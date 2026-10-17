@@ -31,12 +31,12 @@ def test_report_states_counts_gap_duplicates_and_sources(tmp_path):
 
     run_report(dirs)
     text = (dirs["reports"] / "quality_report.md").read_text(encoding="utf-8")
-    assert "`companies.csv` has **4 companies**" in text
+    assert "`companies_complete.csv` has **4 companies**" in text
     assert "That is 19,996 short of the 20,000" in text
     assert "| `linkedin_url` | 4 | 5 | 80.0% |" in text
     assert "| **Live companies** | **5** |" in text
     assert "Boards folded into another company's row: 1" in text
-    assert "2 (1 of them in `companies.csv`)" in text
+    assert "2 (1 of them in `companies_complete.csv`)" in text
     assert "2 US, 1 UK, 0 Canada (75.0% of rows)" in text
     assert "| latmay | board slugs | CC-BY-4.0 | 4 | 2 |" in text
     assert "60.0% of live boards turn up in two or more" in text

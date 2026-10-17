@@ -20,8 +20,10 @@ from company_dataset.enrichment import (
     clean_description,
     clean_name,
     content_website_candidates,
+    english_variant_urls,
     greenhouse_content_url,
     homepage_supports,
+    is_english,
     landing_site,
     linkedin_url,
     name_key,
@@ -156,12 +158,20 @@ def resolve_board(board: Board, outcome: dict, pages: dict, ref, source_name: st
     description = ""
     description_src = ""
     # Re-clean cached text so filter improvements apply without refetching.
+    # The list is for an English-speaking audience: a description only counts in English.
     home_desc = clean_description(homepage.get("description")) if homepage else None
-    if home_desc:
+    if home_desc and is_english(home_desc):
         description, description_src = home_desc, "homepage_meta"
-    else:
-        gh = clean_description(outcome.get("description")) if board.ats == "greenhouse" else None
-        if gh:
+    elif website:
+        for url in english_variant_urls(website):
+            page = pages.get(url)
+            variant = clean_description((page or {}).get("description")) if (page or {}).get("status") == "ok" else None
+            if variant and is_english(variant) and host_of(page.get("final_url") or url).removeprefix("www.") == host_of(website).removeprefix("www."):
+                description, description_src = variant, "homepage_meta_english_page"
+                break
+    if not description and board.ats == "greenhouse":
+        gh = clean_description(outcome.get("description"))
+        if gh and is_english(gh):
             description, description_src = gh, "greenhouse_board_intro"
 
     country = ""

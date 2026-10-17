@@ -1,12 +1,12 @@
 # Data quality report
 
-_Generated 2026-10-17T21:31:14Z_
+_Generated 2026-10-17T21:55:16Z_
 
 ## The short version
 
-`companies.csv` has **8,456 companies**, each with all seven required fields filled in. Another 6,632 live companies are missing at least one field; they are in `companies_incomplete.csv` with the gaps named. That makes 15,088 live companies in total, one row per company.
+`companies_complete.csv` has **8,373 companies**, each with all seven required fields filled in. Another 6,715 live companies are missing at least one field; they are in `companies_incomplete.csv` with the gaps named. `companies_total.csv` has all 15,088 live companies, one row per company.
 
-That is 11,544 short of the 20,000 we were aiming for. The section on coverage below explains why we couldn't find more.
+That is 11,627 short of the 20,000 we were aiming for. The section on coverage below explains why we couldn't find more.
 
 | | Count |
 |---|---|
@@ -18,53 +18,53 @@ That is 11,544 short of the 20,000 we were aiming for. The section on coverage b
 | A company's secondary board: internal, referrals, talent pool | 84 |
 | Extra boards folded into a company already listed | 321 |
 | **Live companies** | **15,088** |
-| **Complete companies (`companies.csv`)** | **8,456** |
+| **Complete companies (`companies_complete.csv`)** | **8,373** |
 
 ## How complete the live list is
 
 | Field | Filled | Of | |
 |---|---|---|---|
-| `name` | 14,861 | 15,088 | 98.5% |
-| `description` | 11,063 | 15,088 | 73.32% |
-| `linkedin_url` | 9,429 | 15,088 | 62.49% |
-| `website_url` | 10,726 | 15,088 | 71.09% |
+| `name` | 14,862 | 15,088 | 98.5% |
+| `description` | 10,864 | 15,088 | 72.0% |
+| `linkedin_url` | 9,440 | 15,088 | 62.57% |
+| `website_url` | 10,735 | 15,088 | 71.15% |
 | `careersite_url` | 15,088 | 15,088 | 100.0% |
 | `ats_system` | 15,088 | 15,088 | 100.0% |
 | `ats_code` | 15,088 | 15,088 | 100.0% |
 
-Among the incomplete rows, the missing fields are `linkedin_url` (5,659), `website_url` (4,362), `description` (4,025), `name` (227). LinkedIn is the hardest: if a company's homepage doesn't link to its LinkedIn page and it isn't in the reference data, we leave it blank rather than guess.
+Among the incomplete rows, the missing fields are `linkedin_url` (5,648), `website_url` (4,353), `description` (4,224), `name` (226). LinkedIn is the hardest: if a company's homepage doesn't link to its LinkedIn page and it isn't in the reference data, we leave it blank rather than guess.
 
 By ATS:
 
 | ATS | Live | Complete |
 |---|---|---|
-| Greenhouse | 8,329 | 3,579 |
-| Lever | 2,357 | 1,644 |
-| Ashby | 4,402 | 3,233 |
+| Greenhouse | 8,330 | 3,550 |
+| Lever | 2,357 | 1,620 |
+| Ashby | 4,401 | 3,203 |
 
 ## Duplicates
 
 A company often has more than one board: a second board for contractors or interns, an old board left behind after a move from Lever to Ashby, and so on. We treat boards as the same company when they share a website, or when they share a LinkedIn page *and* have matching names. Each company appears once; its other boards are listed in `other_boards` in `review/companies_detailed.csv`, and in `review/rejected_records.csv` as `duplicate_company_board`.
 
 - Boards folded into another company's row: 321
-- Companies that share a name with another row but couldn't be confirmed as the same company: 582 (288 of them in `companies.csv`). These are left separate and listed in `review/possible_duplicates.csv` for a person to check. Names alone aren't enough to merge on; there are a lot of companies called Atlas.
+- Companies that share a name with another row but couldn't be confirmed as the same company: 582 (286 of them in `companies_complete.csv`). These are left separate and listed in `review/possible_duplicates.csv` for a person to check. Names alone aren't enough to merge on; there are a lot of companies called Atlas.
 
 Job postings themselves aren't part of this dataset, so the same job appearing on two boards doesn't produce two rows.
 
 ## Where the values come from
 
-- **Name:** vendor 8,422, reference 13, homepage 12, lastroundai 9
-- **Website:** ashby public website 3,207, reference name match homepage verified 1,580, lever home page link 1,532, greenhouse job ads homepage verified 1,245, greenhouse job url origin 757, greenhouse job ads slug match 83, greenhouse job url origin parent 39, lever home page link parent 9, ashby public website parent 4
-- **LinkedIn:** homepage and reference 4,402, homepage link 2,293, reference domain match 1,699, homepage link numeric id 62
-- **Description:** homepage meta 8,259, greenhouse board intro 197
-- **Country:** reference hq 6,068, none 1,379, ashby postings unanimous 832, lever postings unanimous 177
+- **Name:** vendor 8,338, reference 13, homepage 13, lastroundai 9
+- **Website:** ashby public website 3,177, reference name match homepage verified 1,556, lever home page link 1,507, greenhouse job ads homepage verified 1,246, greenhouse job url origin 755, greenhouse job ads slug match 81, greenhouse job url origin parent 38, lever home page link parent 9, ashby public website parent 4
+- **LinkedIn:** homepage and reference 4,366, homepage link 2,275, reference domain match 1,670, homepage link numeric id 62
+- **Description:** homepage meta 8,100, greenhouse board intro 204, homepage meta english page 69
+- **Country:** reference hq 5,998, none 1,371, ashby postings unanimous 827, lever postings unanimous 177
 
 `review/companies_detailed.csv` has the same information per row in its `*_source` columns, so any single value can be traced back.
 
 ## Location
 
-- In `companies.csv`: 5,392 US, 426 UK, 267 Canada (72.0% of rows), 992 elsewhere, 1,379 unknown.
-- Across all live companies: 6,686 US, 483 UK, 316 Canada (49.6% of rows), 1,205 elsewhere, 6,398 unknown.
+- In `companies_complete.csv`: 5,397 US, 428 UK, 265 Canada (72.7% of rows), 912 elsewhere, 1,371 unknown.
+- Across all live companies: 6,689 US, 485 UK, 316 Canada (49.6% of rows), 1,205 elsewhere, 6,393 unknown.
 
 Country means headquarters country from BigPicture, matched on the company's website. If that's missing we use the country of the company's job postings, but only when every posting on the board is in the same country.
 
@@ -103,4 +103,4 @@ So the number of companies with public boards on these three ATSes that can be f
 | `auxiliary_board` | 84 |
 | `test_or_demo_board` | 57 |
 
-We also removed 8 LinkedIn links that pointed at another company's page, and 73 descriptions that were template text shared by three or more companies.
+We also removed 8 LinkedIn links that pointed at another company's page, and 66 descriptions that were template text shared by three or more companies.

@@ -79,7 +79,7 @@ def test_complete_rows_in_companies_csv_incomplete_separate(tmp_path):
 
     stats = run_export(dirs, ref=Reference())
 
-    complete = _read(dirs["output"] / "companies.csv")
+    complete = _read(dirs["output"] / "companies_complete.csv")
     assert list(complete[0]) == list(REQUIRED_FIELDS)
     assert [r["ats_code"] for r in complete] == ["acme"]
     row = complete[0]
@@ -94,7 +94,10 @@ def test_complete_rows_in_companies_csv_incomplete_separate(tmp_path):
     detailed = _read(dirs["review"] / "companies_detailed.csv")
     assert [(r["ats_code"], r["complete"]) for r in detailed] == [("acme", "yes"), ("bare", "no")]
     assert detailed[0]["website_source"] == "greenhouse_job_url_origin"
-    assert sorted(f.name for f in dirs["output"].iterdir()) == ["companies.csv", "companies_incomplete.csv", "source_manifest.csv"]
+    total = _read(dirs["output"] / "companies_total.csv")
+    assert list(total[0]) == list(REQUIRED_FIELDS) + ["complete", "missing_fields"]
+    assert [(r["ats_code"], r["complete"], r["missing_fields"]) for r in total] == [("acme", "yes", ""), ("bare", "no", "description;linkedin_url;website_url")]
+    assert sorted(f.name for f in dirs["output"].iterdir()) == ["companies_complete.csv", "companies_incomplete.csv", "companies_total.csv", "source_manifest.csv"]
 
 
 def test_dead_careersite_and_invalid_boards_are_rejected(tmp_path):

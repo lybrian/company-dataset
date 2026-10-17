@@ -51,9 +51,9 @@ def run_report(dirs: dict) -> dict:
     L += [
         "## The short version",
         "",
-        f"`companies.csv` has **{_n(complete)} companies**, each with all seven required fields filled in. "
+        f"`companies_complete.csv` has **{_n(complete)} companies**, each with all seven required fields filled in. "
         f"Another {_n(ex.get('incomplete_companies', 0))} live companies are missing at least one field; they are in "
-        f"`companies_incomplete.csv` with the gaps named. That makes {_n(live)} live companies in total, "
+        f"`companies_incomplete.csv` with the gaps named. `companies_total.csv` has all {_n(live)} live companies, "
         f"one row per company.",
         "",
         f"That is {_n(max(0, TARGET_MIN - complete))} short of the 20,000 we were aiming for. "
@@ -69,7 +69,7 @@ def run_report(dirs: dict) -> dict:
         f"| A company's secondary board: internal, referrals, talent pool | {_n(rejects.get('auxiliary_board', 0))} |",
         f"| Extra boards folded into a company already listed | {_n(ex.get('boards_merged_into_companies', rejects.get('duplicate_company_board', 0)))} |",
         f"| **Live companies** | **{_n(live)}** |",
-        f"| **Complete companies (`companies.csv`)** | **{_n(complete)}** |",
+        f"| **Complete companies (`companies_complete.csv`)** | **{_n(complete)}** |",
         "",
     ]
 
@@ -99,7 +99,7 @@ def run_report(dirs: dict) -> dict:
         "",
         f"- Boards folded into another company's row: {_n(ex.get('boards_merged_into_companies', 0))}",
         f"- Companies that share a name with another row but couldn't be confirmed as the same company: "
-        f"{_n(ex.get('same_name_not_merged', 0))} ({_n(ex.get('same_name_not_merged_in_deliverable', 0))} of them in `companies.csv`). "
+        f"{_n(ex.get('same_name_not_merged', 0))} ({_n(ex.get('same_name_not_merged_in_deliverable', 0))} of them in `companies_complete.csv`). "
         "These are left separate and listed in `review/possible_duplicates.csv` for a person to check. Names alone aren't enough to merge on; "
         "there are a lot of companies called Atlas.",
         "",
@@ -119,7 +119,7 @@ def run_report(dirs: dict) -> dict:
     ]
 
     L += ["## Location", ""]
-    for label, key, total in (("In `companies.csv`", "country_complete", complete), ("Across all live companies", "country_live", live)):
+    for label, key, total in (("In `companies_complete.csv`", "country_complete", complete), ("Across all live companies", "country_live", live)):
         c = ex.get(key, {})
         b = c.get("breakdown", {})
         known = c.get("rows_with_country", 0)

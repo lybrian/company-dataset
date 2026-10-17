@@ -4,11 +4,12 @@ A list of companies that hire through **Greenhouse, Lever or Ashby**, built from
 
 As of the last run (October 2026):
 
-- **8,456 companies** with all seven required fields: `data/output/companies.csv`
-- **6,632 more** live companies missing at least one field: `data/output/companies_incomplete.csv`, which names the missing fields
+- **8,373 companies** with all seven required fields: `data/output/companies_complete.csv`
+- **6,715 more** live companies missing at least one field: `data/output/companies_incomplete.csv`, which names the missing fields
+- **All 15,088** in one file for merging: `data/output/companies_total.csv`, with `complete` and `missing_fields` columns
 - 72% of the complete companies are headquartered in the US, UK or Canada
 
-Both files have exactly the required columns: `name`, `description`, `linkedin_url`, `website_url`, `careersite_url`, `ats_system`, `ats_code`. To share the data, send `companies.csv` together with `source_manifest.csv`, which carries the credit some source licenses require.
+All three start with the same required columns: `name`, `description`, `linkedin_url`, `website_url`, `careersite_url`, `ats_system`, `ats_code`. To share the data, send `companies_complete.csv` (or `companies_total.csv`) together with `source_manifest.csv`, which carries the credit some source licenses require.
 
 Every company on the list has a board that answered the vendor's API when we checked it. Nothing is made up. If we couldn't find a value from a real source, the field is empty and the company goes in the incomplete file.
 
@@ -18,7 +19,7 @@ Every company on the list has a board that answered the vendor's API when we che
 - **name**: the vendor's own record (the Greenhouse board name, the Ashby organization, the Lever page title). We fall back to the source datasets, then BigPicture, then the homepage title. Labels like "Open Roles" or "Acme Careers" don't count as names.
 - **website_url**: Ashby publishes each company's website, and Lever boards link to it. For Greenhouse we use the company domain its job links point to, or links in the company's own job ads. If none of those work, we look the company up in BigPicture by name, but only accept a domain that matches the board slug and whose homepage names the company.
 - **linkedin_url**: the LinkedIn company page linked from the company's homepage, cross-checked against BigPicture; otherwise BigPicture's record for that domain. It is never built from a name.
-- **description**: the description the company gives its own homepage (the meta description), or failing that its Greenhouse board intro. Recruiting copy ("Join our team…"), cookie banners and placeholders are filtered out, and long text is cut at a sentence boundary.
+- **description**: the description the company gives its own homepage (the meta description), or failing that its Greenhouse board intro. Descriptions must be in English: if a homepage is in another language we ask for its English version (and try `/en`, `/en-us`, `/en-gb`, `/us`); if there isn't one, the description is left empty. Recruiting copy ("Join our team…"), cookie banners and placeholders are filtered out, and long text is cut at a sentence boundary.
 
 Vendor demo and sandbox boards ("Lever Demo 2", "UiPath Workday Sandbox") and companies' internal, referral and talent-pool boards are left out, since they aren't separate companies.
 
@@ -34,7 +35,8 @@ Companies that only share a name are left alone, because many different companie
 
 | File | What it holds |
 |---|---|
-| `data/output/companies.csv` | The list: complete companies, seven columns |
+| `data/output/companies_complete.csv` | The list: complete companies, seven columns |
+| `data/output/companies_total.csv` | Every live company, seven columns plus `complete` and `missing_fields` |
 | `data/output/companies_incomplete.csv` | Live companies with gaps, plus a `missing_fields` column |
 | `data/output/source_manifest.csv` | Every source, with its license, attribution, download date and checksum |
 | `reports/quality_report.md` | Counts, field coverage, sources, locations and rejections |

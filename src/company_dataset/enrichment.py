@@ -244,6 +244,7 @@ _BOILERPLATE_RE = re.compile(
     r"|pre-employment|equal opportunity|eeo|applicants? (will|must)|apply (now|today|below)"
     r"|^(join|we['’]re seeking|we are seeking|want to be part)\b|join (us|our [a-z ]{0,20}team)"
     r"|careers? (at|with|opportunit)|learn and grow|rare opportunity|hire great people|we['’]re hiring"
+    r"|explore open roles|open roles across|next career"
     r"|cookies?\b.*\b(consent|policy|accept)|enable javascript|just a moment|access denied"
     r"|page not found|coming soon|under construction|domain (is )?for sale|buy this domain"
     r"|attention required|verify you are human|privacy policy)",
@@ -254,7 +255,10 @@ MAX_DESCRIPTION_CHARS = 600
 MIN_DESCRIPTION_CHARS = 40
 
 
-_MOJIBAKE_RE = re.compile("[ÃÄÅ][\x80-\xbf]|â€|Â[\xa0-\xbf]")
+# A UTF-8 lead byte (Â..ô) followed by a continuation byte, both read as Latin-1, or the
+# CP1252 form of the same ("â€"). Real text practically never contains these pairs.
+_MOJIBAKE_RE = re.compile("[Â-ô][\x80-\xbf]|â€")
+_INVISIBLE_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‏‪-‮⁠﻿]")
 
 
 def fix_mojibake(s: str) -> str:
@@ -280,6 +284,7 @@ def clean_description(text) -> str | None:
     s = fix_mojibake(s)
     if _MOJIBAKE_RE.search(s):
         return None  # garbled beyond repair; better empty than unreadable
+    s = _WS_RE.sub(" ", _INVISIBLE_RE.sub("", s)).strip()
     s = _LABEL_PREFIX_RE.sub("", s).strip()
     if len(s) < MIN_DESCRIPTION_CHARS:
         return None
@@ -291,6 +296,49 @@ def clean_description(text) -> str | None:
         end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
         s = cut[: end + 1] if end >= MIN_DESCRIPTION_CHARS else cut.rsplit(" ", 1)[0] + "…"
     return s
+
+
+_EN_WORDS = frozenset("the and of to a in for is with our we you that on are your by from as it at an be".split())
+# Common function words of the other languages that show up most (de, fr, es, pt, it, nl, id).
+_FOREIGN_WORDS = frozenset(
+    "der die das und mit für ist ein eine wir sie ihre unsere le la les des et pour avec une est nous vous "
+    "el los las con por para que del una es em com uma não para os het een van voor met il di per che della "
+    "dan yang untuk dengan og det er som på ikke af hos dig til vi jeg och att är pro je na se "
+    "de du au al ed ti si sua seu tu ton votre notre nos sur dans".split()
+)
+# Letters that don't occur in English text (unlike é or ü, which do in loanwords and names).
+_FOREIGN_LETTERS = frozenset("æøåßěščřžůďťňłąęśźżőűğşıãõœ")
+
+
+def is_english(text) -> bool:
+    """Is a description written in English? (langdetect, with a stopword check for close calls)."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    from langdetect import DetectorFactory, detect_langs
+    from langdetect.lang_detect_exception import LangDetectException
+
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return False
+    ascii_share = sum(ch.isascii() for ch in letters) / len(letters)
+    if ascii_share < 0.8:
+        return False  # mostly another script (or accented heavily): Korean, Japanese, Cyrillic…
+    plain = re.sub(r"\S+\.[a-z]{2,6}\b\S*", " ", text.lower())  # "Squarepoint-Capital.com": not the word "com"
+    words = re.findall(r"[^\W\d_]+", plain)
+    english = sum(w in _EN_WORDS for w in words)
+    foreign = sum(w in _FOREIGN_WORDS or not _FOREIGN_LETTERS.isdisjoint(w) for w in words)
+    if foreign > english:
+        return False
+    if foreign == 0 and (english >= 2 or (len(text) < 100 and ascii_share >= 0.97)):
+        return True  # clear English evidence; langdetect misreads short or technical text
+    DetectorFactory.seed = 0  # deterministic results across runs
+    try:
+        best = detect_langs(text)[0]
+    except LangDetectException:
+        best = None
+    if best is not None and best.prob >= 0.8:
+        return best.lang == "en"
+    return english > 0
 
 
 def homepage_description(page: Page) -> str | None:
@@ -334,8 +382,6 @@ _BOARD_LABEL_RE = re.compile(
     re.I,
 )
 
-
-_INVISIBLE_RE = re.compile("[​-‏‪-‮⁠﻿]")
 
 # Vendor demo / sandbox / test boards answer the API like any other board but are not
 # companies. "Sandbox" alone is a real word in brand names (SandboxAQ, Sandbox VR), so
@@ -488,9 +534,27 @@ def content_website_candidates(board: "Board", content_page: dict | None) -> lis
     return out[:3]
 
 
+ENGLISH_HEADERS = {"Accept-Language": "en-US,en;q=0.9"}
+ENGLISH_PATHS = ("/en", "/en-us", "/en-gb", "/us")
+
+
+def english_variant_urls(site: str) -> list[str]:
+    """Where an international site usually keeps its English homepage."""
+    return [site.rstrip("/") + path for path in ENGLISH_PATHS]
+
+
+def needs_english(page: dict | None) -> bool:
+    """A fetched homepage whose description is missing English text or is garbled."""
+    if not page or page.get("status") != "ok" or not page.get("description"):
+        return False
+    raw = page["description"]
+    desc = clean_description(raw)
+    return bool(_MOJIBAKE_RE.search(raw)) or (desc is not None and not is_english(desc))
+
+
 def fetch_page(client: HttpClient, url: str, max_bytes: int = 3_000_000) -> dict:
     try:
-        resp = client.get(url)
+        resp = client.get(url, headers=ENGLISH_HEADERS)
     except RequestError as exc:
         return {"status": "error", "error": str(exc)[:200], "final_url": "", "fetched_at": utc_now()}
     if resp.status == 200:
@@ -656,6 +720,25 @@ def run_enrich(
         for site in ref.name_candidates(board_name_for_lookup(board, outcome, pages.get(board.careersite_url)), board.code):
             homepage_urls.append(site)
     fetch_all(homepage_urls, "company homepages")
+
+    # Non-English or garbled homepage text: ask the same page for English (older cache
+    # entries were fetched without Accept-Language), then try the usual /en paths.
+    retry = [u for u in dict.fromkeys(homepage_urls) if needs_english(pages.get(u)) and not pages[u].get("english_requested")]
+    print(f"[enrich] non-English or garbled homepages: {len(retry)} to refetch in English", flush=True)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for url, page in zip(retry, executor.map(lambda u: fetch_page(client, u), retry)):
+            if page.get("status") == "ok" or pages[url].get("status") != "ok":
+                pages[url] = page
+            pages[url]["english_requested"] = True
+    _save(cache_path, pages)
+    variants = []
+    for u in dict.fromkeys(homepage_urls):
+        page = pages.get(u)
+        site = landing_site(u, page) if page else None
+        if site and needs_english(page):
+            variants += english_variant_urls(site)
+    fetch_all(variants, "English versions of homepages")
+
     if reference is None:
         # Rebuild so domains reached via homepage redirects are covered too.
         reference_mod.load_or_build(dirs, boards, pages)

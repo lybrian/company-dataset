@@ -76,6 +76,30 @@ def test_redirect_to_platform_host_drops_website():
     assert resolve_board(_board(), outcome, pages, Reference()).website_url == ""
 
 
+def test_non_english_description_replaced_by_english_page_or_dropped():
+    outcome = {"company_name": "Aleph Alpha", "website_url": "https://aleph-alpha.com"}
+    german = _home(final_url="https://aleph-alpha.com/", site_name="Aleph Alpha",
+                   description="Aleph Alpha entwickelt spezialisierte Sprachmodelle und KI-Lösungen für Unternehmen und öffentliche Verwaltung.")
+    pages = {"https://aleph-alpha.com": german}
+    dropped = resolve_board(_board(code="alephalpha"), outcome, pages, Reference())
+    assert dropped.description == ""
+    pages["https://aleph-alpha.com/en"] = _home(final_url="https://aleph-alpha.com/en", site_name="Aleph Alpha",
+                                                description="Aleph Alpha builds sovereign AI models and tools for enterprises and the public sector.")
+    english = resolve_board(_board(code="alephalpha"), outcome, pages, Reference())
+    assert english.description.startswith("Aleph Alpha builds sovereign AI")
+    assert english.sources["description_source"] == "homepage_meta_english_page"
+
+
+def test_english_page_on_another_site_is_not_used():
+    outcome = {"company_name": "Addi", "website_url": "https://co.addi.com"}
+    pages = {
+        "https://co.addi.com": _home(final_url="https://co.addi.com/", site_name="Addi",
+                                     description="Compra lo que quieras a cuotas y sin enredos. Paga con Addi en tus tiendas favoritas."),
+        "https://co.addi.com/en": _home(final_url="https://example-parking.com/", description="This domain may be for sale, contact us for more information."),
+    }
+    assert resolve_board(_board(code="addi"), outcome, pages, Reference()).description == ""
+
+
 def test_slug_matches():
     assert slug_matches("iyzi-payments", "iyzico", "https://www.iyzico.com")
     assert slug_matches("deliverecthq", "Deliverect", None)

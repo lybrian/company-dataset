@@ -257,9 +257,11 @@ def run_export(dirs: dict, ref=None) -> dict:
     complete = [r for r in kept if r["complete"] == "yes"]
     incomplete = [r for r in kept if r["complete"] == "no"]
 
-    # Hand-off files: exactly the required fields.
-    write_csv(dirs["output"] / "companies.csv", list(REQUIRED_FIELDS), complete)
+    # Hand-off files: the required fields first, in the same order in every file, so
+    # complete + incomplete line up with total.
+    write_csv(dirs["output"] / "companies_complete.csv", list(REQUIRED_FIELDS), complete)
     write_csv(dirs["output"] / "companies_incomplete.csv", list(REQUIRED_FIELDS) + ["missing_fields"], incomplete)
+    write_csv(dirs["output"] / "companies_total.csv", list(REQUIRED_FIELDS) + ["complete", "missing_fields"], complete + incomplete)
 
     # Review files: provenance, rejects and possible duplicates, for checking the work.
     review = Path(dirs.get("review") or Path(dirs["data"]) / "review")

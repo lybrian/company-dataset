@@ -153,6 +153,32 @@ class TestNames:
         assert fix_mojibake("plain text") == "plain text"
         assert fix_mojibake("un cabinet indÃ©pendant basÃ© Ã Rabat") == "un cabinet indépendant basé à Rabat"
 
+    def test_dash_mojibake_and_invisible_marks_fixed(self):
+        assert clean_description("AI-powered counter-drone defense systems. Edda â\x80\x94 fast, low-cost.") == \
+            "AI-powered counter-drone defense systems. Edda — fast, low-cost."
+        assert clean_description("Aegis ‌Ventures is a NYC-based venture studio that partners with founders.") == \
+            "Aegis Ventures is a NYC-based venture studio that partners with founders."
+
+    def test_is_english(self):
+        from company_dataset.enrichment import is_english
+
+        english = [
+            "Real estate data management made beautifully simple.",
+            "Squarepoint-Capital.com - quantitative investment manager",
+            "Cogstate combines cognitive science, operational excellence, and digital innovations to simplify cognitive assessment.",
+            "Café Nero serves great coffee across the UK and Ireland.",
+        ]
+        other = [
+            "ReHire conecta al mejor talento con las mejores empresas. Headhunting y staffing.",
+            "Die benutzerfreundliche, modulare und datengetriebene Softwareplattform für Kliniken.",
+            "No Pagar.me, conectamos milhares de sites e aplicativos a toda a cadeia de pagamentos.",
+            "Vi vil at det skal være like fantastisk å kjøpe en bil som det er å drømme om dem.",
+            "42dot은 현대자동차그룹의 글로벌 소프트웨어 센터로서 그룹의 SDV (Software-Defined Vehicles)",
+            "Pinkoi 販售設計商品、數位創作、體驗活動",
+        ]
+        assert all(is_english(t) for t in english)
+        assert not any(is_english(t) for t in other)
+
     def test_unrepairable_mojibake_description_dropped(self):
         polish = "home.pl jest najwiÄ\x99kszym w Polsce dostawcÄ usÅ\x82ug internetowych dla firm."
         assert clean_description(polish) is None

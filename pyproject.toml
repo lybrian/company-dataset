@@ -7,7 +7,7 @@ name = "company-dataset"
 version = "0.1.0"
 description = "Build a verified dataset of companies using Greenhouse, Lever, or Ashby public job boards"
 requires-python = ">=3.11"
-dependencies = ["requests>=2.31", "duckdb>=1.1"]
+dependencies = ["requests>=2.31", "duckdb>=1.1", "langdetect>=1.0.9"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
