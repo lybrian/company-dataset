@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from company_dataset.models import Reject, SourceMeta, SourceRecord
-from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, is_valid_slug
+from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, clean_code
 
 META = SourceMeta(
     name="feashliaa",
@@ -29,14 +29,11 @@ def run_download(dest_dir: Path, client) -> None:
     """Download per-ATS company lists and combine into one JSON file."""
     combined: dict[str, list[str]] = {}
     for ats, filename in _FILES.items():
-        try:
-            resp = client.get(_BASE + filename)
-            if resp.status == 200:
-                combined[ats] = json.loads(resp.text)
-            else:
-                combined[ats] = []
-        except Exception:
-            combined[ats] = []
+        resp = client.get(_BASE + filename)
+        if resp.status != 200:
+            # Never replace a good snapshot with an empty one.
+            raise RuntimeError(f"feashliaa {filename}: HTTP {resp.status}")
+        combined[ats] = json.loads(resp.text)
     dest_dir.mkdir(parents=True, exist_ok=True)
     (dest_dir / META.filename).write_text(json.dumps(combined), encoding="utf-8")
 
@@ -53,8 +50,9 @@ def parse(path: Path):
             if not isinstance(slug, str):
                 continue
             slug = slug.strip()
-            if not is_valid_slug(slug):
-                rejects.append(Reject(source=META.name, reason="invalid_slug", detail=slug, row_ref=ref, ats=ats))
+            raw_slug, slug = slug, clean_code(ats, slug)
+            if slug is None:
+                rejects.append(Reject(source=META.name, reason="invalid_slug", detail=raw_slug, row_ref=ref, ats=ats))
                 continue
             records.append(
                 SourceRecord(

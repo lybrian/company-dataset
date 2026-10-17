@@ -193,7 +193,7 @@ def test_200_invalid_json_is_unresolved():
 def test_cache_skips_valid_and_invalid_but_retries_unresolved(tmp_path):
     cache_path = tmp_path / "validation.json"
 
-    client1, session1 = make_client({LEVER_URL: FakeResponse(404, "")})
+    client1, _ = make_client({LEVER_URL: FakeResponse(404, "")})
     v1 = BoardValidator(client1, cache_path=cache_path)
     r1 = v1.validate_many([cand("lever", "acme")])
     assert r1["lever:acme"].status == "invalid"

@@ -17,6 +17,7 @@ class HttpResponse:
     status: int
     text: str
     url: str
+    content: bytes = b""
 
     def json(self):
         import json
@@ -38,6 +39,22 @@ class _HostThrottle:
             if delta > 0:
                 self.sleep(delta)
             self.last = time.monotonic()
+
+
+def _decode(resp) -> str:
+    """Response text, preferring UTF-8 when the server didn't declare a charset.
+
+    requests falls back to ISO-8859-1 for text/* without a charset, which turns
+    "gestión" into "gestiÃ³n" on the many sites that serve UTF-8 without saying so.
+    """
+    content = getattr(resp, "content", None)
+    declared = "charset=" in ((getattr(resp, "headers", None) or {}).get("Content-Type", "") or "").lower()
+    if isinstance(content, bytes) and not declared:
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+    return resp.text
 
 
 class HttpClient:
@@ -72,13 +89,16 @@ class HttpClient:
                 self._throttles[host] = throttle
             return throttle
 
-    def get(self, url: str) -> HttpResponse:
+    def get(self, url: str, headers: dict | None = None, binary: bool = False) -> HttpResponse:
         throttle = self._throttle(url)
         last_error: Exception | None = None
         for attempt in range(1, self.max_attempts + 1):
             throttle.wait()
             try:
-                resp = self.session.get(url, timeout=self.timeout)
+                if headers:
+                    resp = self.session.get(url, timeout=self.timeout, headers=headers)
+                else:
+                    resp = self.session.get(url, timeout=self.timeout)
             except Exception as exc:
                 last_error = exc
                 if attempt < self.max_attempts:
@@ -86,14 +106,12 @@ class HttpClient:
                     continue
                 raise RequestError(str(exc)) from exc
             status = resp.status_code
-            if status < 400 or status == 404:
-                return HttpResponse(status, resp.text, resp.url)
-            if status in self.RETRYABLE:
-                if attempt < self.max_attempts:
-                    self._backoff(attempt)
-                    continue
-                return HttpResponse(status, resp.text, resp.url)
-            return HttpResponse(status, resp.text, resp.url)
+            if status in self.RETRYABLE and attempt < self.max_attempts:
+                self._backoff(attempt)
+                continue
+            if binary:
+                return HttpResponse(status, "", resp.url, getattr(resp, "content", b""))
+            return HttpResponse(status, _decode(resp), resp.url)
         raise RequestError(str(last_error))
 
     def _backoff(self, attempt: int):

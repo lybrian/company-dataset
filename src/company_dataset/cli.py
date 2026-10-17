@@ -24,11 +24,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="pipeline stage to run (default: all)",
     )
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--workers", type=int, default=10, help="max concurrent validation requests")
+    parser.add_argument("--workers", type=int, default=10, help="max concurrent requests")
     parser.add_argument("--per-host-delay", type=float, default=0.15, help="min seconds between requests per host")
     parser.add_argument("--timeout", type=float, default=20.0, help="per-request timeout in seconds")
     parser.add_argument("--limit", type=int, default=None, help="validate at most N boards per ATS (smoke runs)")
     parser.add_argument("--revalidate", action="store_true", help="ignore cached validation results")
+    parser.add_argument("--max-age-days", type=float, default=None, help="recheck cached validation results older than this")
+    parser.add_argument("--refresh", action="store_true", help="re-download sources even when a cached copy exists")
     return parser
 
 
@@ -37,7 +39,7 @@ def main(argv=None) -> int:
     dirs = resolve_dirs(args.data_dir)
     command = args.command
     if command in ("download", "all"):
-        run_download(dirs)
+        run_download(dirs, refresh=args.refresh)
     if command in ("build", "all"):
         run_build(dirs)
     if command in ("validate", "all"):
@@ -48,13 +50,10 @@ def main(argv=None) -> int:
             timeout=args.timeout,
             limit=args.limit,
             revalidate=args.revalidate,
+            max_age_days=args.max_age_days,
         )
     if command in ("enrich", "all"):
-        run_enrich(
-            dirs,
-            max_workers=args.workers,
-            timeout=args.timeout,
-        )
+        run_enrich(dirs, max_workers=args.workers, timeout=args.timeout)
     if command in ("export", "all"):
         run_export(dirs)
     if command in ("report", "all"):

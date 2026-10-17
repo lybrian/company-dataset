@@ -4,16 +4,16 @@ import csv
 from pathlib import Path
 
 from company_dataset.models import Reject, SourceMeta, SourceRecord
-from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, is_valid_slug, parse_board_url
+from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, clean_code, parse_board_url
 
 META = SourceMeta(
     name="kaleb",
     description="Kaleb Confer Job Board Directory (12,237 board addresses across eight ATS platforms, live-confirmed)",
     download_url="https://kalebconfer-sys.github.io/job-board-directory/job-board-directory.csv",
     filename="job-board-directory.csv",
-    license="No formal license",
-    license_url="",
-    license_note="No formal license file in repository; publisher site states 'free to pull as data... no attribution required'. Incorporated with attribution; FLAGGED for review.",
+    license="CC0-1.0",
+    license_url="https://creativecommons.org/publicdomain/zero/1.0/",
+    license_note="No LICENSE file in the repository; the publisher's site declares CC0 1.0 in its schema.org Dataset metadata and states 'no signup, no key, no attribution required' (checked 2026-10-17). Attributed anyway.",
     attribution="kalebconfer-sys/job-board-directory (revivacatch.com), built 2026-10-15",
 )
 
@@ -35,8 +35,9 @@ def parse(path: Path):
                 rejects.append(Reject(source=META.name, reason="unsupported_ats", detail=platform or "(empty)", row_ref=ref, raw=dict(row)))
                 continue
             token = (row.get("token") or "").strip()
-            if not is_valid_slug(token):
-                rejects.append(Reject(source=META.name, reason="invalid_slug", detail=token, row_ref=ref, ats=ats, raw=dict(row)))
+            raw_token, token = token, clean_code(ats, token)
+            if token is None:
+                rejects.append(Reject(source=META.name, reason="invalid_slug", detail=raw_token, row_ref=ref, ats=ats, raw=dict(row)))
                 continue
             region = "eu" if (row.get("region") or "").strip().upper() == "EU" else None
             board_url = (row.get("board_url") or "").strip() or None
@@ -58,7 +59,6 @@ def parse(path: Path):
                     name=name,
                     careersite_url=board_url,
                     row_ref=ref,
-                    raw=dict(row),
                 )
             )
     return records, rejects

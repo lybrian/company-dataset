@@ -1,100 +1,106 @@
-# Quality Report: Companies on Greenhouse, Lever and Ashby
+# Data quality report
 
-Generated: 2026-10-17T16:02:18Z
+_Generated 2026-10-17T21:31:14Z_
 
-## Executive summary
+## The short version
 
-| Metric | Value |
+`companies.csv` has **8,456 companies**, each with all seven required fields filled in. Another 6,632 live companies are missing at least one field; they are in `companies_incomplete.csv` with the gaps named. That makes 15,088 live companies in total, one row per company.
+
+That is 11,544 short of the 20,000 we were aiming for. The section on coverage below explains why we couldn't find more.
+
+| | Count |
 |---|---|
-| Source rows read | 114394 |
-| In-scope source records (greenhouse/lever/ashby) | 66208 |
-| Source rows rejected at parse | 48186 |
-| Duplicate source rows merged | 36485 |
-| Unique candidate boards (ats + casefolded code) | 29723 |
-| Boards checked live | 29723 |
-| Validated live boards | 15016 |
-| Invalid boards (404) | 14707 |
-| Unresolved boards (kept for review) | 0 |
-| **Exported companies** | **15016** |
-| **Records complete across all 7 required fields** | **1631 (10.86%)** |
+| Board slugs collected from all sources | 31,843 |
+| Still live when checked against the vendor's API | 16,084 |
+| Gone (404 from the vendor) | 15,759 |
+| API answers but the public careers page is gone | 534 |
+| Vendor demo, sandbox or test boards ("Lever Demo 2", "Merge API Integration Sandbox") | 57 |
+| A company's secondary board: internal, referrals, talent pool | 84 |
+| Extra boards folded into a company already listed | 321 |
+| **Live companies** | **15,088** |
+| **Complete companies (`companies.csv`)** | **8,456** |
 
-## Source audit
+## How complete the live list is
 
-| Source | License | Rows read | In-scope | Rejected | Contributed candidates |
-|---|---|---|---|---|---|
-| latmay | CC-BY-4.0 | 69638 | 28162 | 41476 | 28155 |
-| lastroundai | CC-BY-4.0 | 9935 | 9935 | 0 | 9935 |
-| kaleb | No formal license | 12237 | 6225 | 6012 | 6225 |
-| moonie | CC0-1.0 | 1804 | 1106 | 698 | 1106 |
-| feashliaa | MIT | 15862 | 15862 | 0 | 15862 |
-| commoncrawl | CC ToU (factual URL data) | 4767 | 4767 | 0 | 4628 |
-| reapxdev_greenhouse | CC-BY-4.0 | 92 | 92 | 0 | 92 |
-| reapxdev_ashby | CC-BY-4.0 | 59 | 59 | 0 | 59 |
-
-- **License flag (kaleb):** No formal license file in repository; publisher site states 'free to pull as data... no attribution required'. Incorporated with attribution; FLAGGED for review.
-- **License flag (feashliaa):** MIT covers the repository including its data files. Board slugs are factual identifiers; each is live-verified against the vendor API before export.
-- **License flag (commoncrawl):** Only URL path segments (factual board identifiers) are extracted; every token is independently live-verified against the vendor's public API before export. No page content is used.
-
-## Board validation by ATS
-
-| ATS | Candidates | Valid | Invalid | Unresolved | Exported |
-|---|---|---|---|---|---|
-| ashby | 5776 | 4109 | 1667 | 0 | 4109 |
-| greenhouse | 15217 | 8031 | 7186 | 0 | 8031 |
-| lever | 8730 | 2876 | 5854 | 0 | 2876 |
-
-## Metadata completeness (exported rows)
-
-| Field | Non-null | Total | Coverage |
+| Field | Filled | Of | |
 |---|---|---|---|
-| name | 13494 | 15016 | 89.86% |
-| description | 5933 | 15016 | 39.51% |
-| linkedin_url | 2007 | 15016 | 13.37% |
-| website_url | 2912 | 15016 | 19.39% |
-| careersite_url | 15016 | 15016 | 100.0% |
-| ats_system | 15016 | 15016 | 100.0% |
-| ats_code | 15016 | 15016 | 100.0% |
+| `name` | 14,861 | 15,088 | 98.5% |
+| `description` | 11,063 | 15,088 | 73.32% |
+| `linkedin_url` | 9,429 | 15,088 | 62.49% |
+| `website_url` | 10,726 | 15,088 | 71.09% |
+| `careersite_url` | 15,088 | 15,088 | 100.0% |
+| `ats_system` | 15,088 | 15,088 | 100.0% |
+| `ats_code` | 15,088 | 15,088 | 100.0% |
 
-Records with ALL 7 required fields populated simultaneously: 1631 / 15016 (10.86%). This is not the average of the per-field percentages above — a row only counts here if every required field is non-empty at once. `country` is additional metadata, not one of the 7 required fields, and is reported separately below.
+Among the incomplete rows, the missing fields are `linkedin_url` (5,659), `website_url` (4,362), `description` (4,025), `name` (227). LinkedIn is the hardest: if a company's homepage doesn't link to its LinkedIn page and it isn't in the reference data, we leave it blank rather than guess.
 
-Rows where name equals the board slug: 5723.
+By ATS:
 
-## Country coverage
-
-- Exported rows with country: 3629 (24.17%)
-- US: 2889
-- GB: 139
-- CA: 120
-- All other countries combined: 481
-
-Country is set only when every job posting on the board reports the same country (Lever ISO `country` field; Ashby `addressCountry`), or when a source dataset explicitly provides it. It is never guessed.
+| ATS | Live | Complete |
+|---|---|---|
+| Greenhouse | 8,329 | 3,579 |
+| Lever | 2,357 | 1,644 |
+| Ashby | 4,402 | 3,233 |
 
 ## Duplicates
 
-- Source rows merged into an existing board: 36485
-- Exported rows flagged as sharing a website URL with another exported row (cross-board duplicate signal): 91
+A company often has more than one board: a second board for contractors or interns, an old board left behind after a move from Lever to Ashby, and so on. We treat boards as the same company when they share a website, or when they share a LinkedIn page *and* have matching names. Each company appears once; its other boards are listed in `other_boards` in `review/companies_detailed.csv`, and in `review/rejected_records.csv` as `duplicate_company_board`.
 
-## Policy and limitations
+- Boards folded into another company's row: 321
+- Companies that share a name with another row but couldn't be confirmed as the same company: 582 (288 of them in `companies.csv`). These are left separate and listed in `review/possible_duplicates.csv` for a person to check. Names alone aren't enough to merge on; there are a lot of companies called Atlas.
 
-- `linkedin_url` is intentionally empty for all rows: no licensed source provides verified LinkedIn URLs and this pipeline never guesses them.
-- `description` comes only from the Greenhouse board `content` field (company-authored, served by Greenhouse's public Job Board API); Lever and Ashby public APIs expose no company description.
-- `website_url` comes only from the origin of Greenhouse `absolute_url` job links that point at a company's own (non-Greenhouse) domain; it is never derived from company names.
-- Boards with zero open jobs are valid; emptiness never marks a board invalid.
-- Boards that failed validation with 404 are excluded from companies.csv and written to rejected_records.csv; network-level failures are marked `validation_unresolved` and kept for review and re-runs.
-- Lever slugs are case-sensitive; this pipeline preserves casing, dedupes case-insensitively, and records the exact casing that validated.
-- Lever boards are probed on the global instance first, then the EU instance (`api.eu.lever.co`).
-- Raw source files are cached unmodified under `data/raw/`; cleaned outputs live under `data/output/`.
-- The kalebconfer-sys job-board-directory publishes no formal license; its site states the data is free to use with no attribution required. It is incorporated with attribution and flagged in `source_manifest.csv` for review.
-- Validation hits only the three vendors' documented public job board endpoints with bounded concurrency, per-host rate limiting, timeouts, retries, and a resumable cache (`data/cache/validation.json`).
-- Deduplication folds case for the merge key (`ats + casefolded code`), but Lever board slugs are documented case-sensitive. A handful of candidates (observed: 4) have multiple raw casings merged into one board; only the casing that validates first is kept. If two of these were ever genuinely distinct live companies rather than inconsistent scraping of the same one, the second would be silently dropped. This is a known, unmitigated edge case, not something this run can rule out.
-- This run recorded zero `unresolved` boards across every candidate checked live. That is a clean result but an unusually clean one for ~29.5k calls against rate-limited third-party APIs; treat it as this run's measured result, not a guarantee that a future run (or `--revalidate`) will also see zero transient failures.
+Job postings themselves aren't part of this dataset, so the same job appearing on two boards doesn't produce two rows.
 
-## Reproduction
+## Where the values come from
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-pytest
-company-dataset all
-```
+- **Name:** vendor 8,422, reference 13, homepage 12, lastroundai 9
+- **Website:** ashby public website 3,207, reference name match homepage verified 1,580, lever home page link 1,532, greenhouse job ads homepage verified 1,245, greenhouse job url origin 757, greenhouse job ads slug match 83, greenhouse job url origin parent 39, lever home page link parent 9, ashby public website parent 4
+- **LinkedIn:** homepage and reference 4,402, homepage link 2,293, reference domain match 1,699, homepage link numeric id 62
+- **Description:** homepage meta 8,259, greenhouse board intro 197
+- **Country:** reference hq 6,068, none 1,379, ashby postings unanimous 832, lever postings unanimous 177
+
+`review/companies_detailed.csv` has the same information per row in its `*_source` columns, so any single value can be traced back.
+
+## Location
+
+- In `companies.csv`: 5,392 US, 426 UK, 267 Canada (72.0% of rows), 992 elsewhere, 1,379 unknown.
+- Across all live companies: 6,686 US, 483 UK, 316 Canada (49.6% of rows), 1,205 elsewhere, 6,398 unknown.
+
+Country means headquarters country from BigPicture, matched on the company's website. If that's missing we use the country of the company's job postings, but only when every posting on the board is in the same country.
+
+## Sources
+
+| Source | Used for | License | Live boards it lists | Only source for |
+|---|---|---|---|---|
+| latmay | board slugs | CC-BY-4.0 | 13,286 | 653 |
+| lastroundai | board slugs | CC-BY-4.0 | 8,901 | 466 |
+| kaleb | board slugs | CC0-1.0 | 6,046 | 10 |
+| moonie | board slugs | CC0-1.0 | 1,061 | 7 |
+| feashliaa | board slugs | MIT | 9,268 | 1 |
+| commoncrawl | board slugs | Common Crawl Terms of Use | 11,382 | 51 |
+| headcountlabs | board slugs | CC-BY-4.0 | 10,351 | 481 |
+| openatsfeed | board slugs | MIT | 11,491 | 115 |
+| bigpicture | company details | ODC-By-1.0 | - | - |
+
+## Why there aren't 20,000
+
+The sources overlap heavily. 88.4% of live boards turn up in two or more of them, and each new source we added contributed only a few hundred boards nobody else had. Things we tried beyond the original sources:
+
+- Common Crawl's index for the Greenhouse, Lever and Ashby board hosts, across 41 crawls from 2020 to 2026. (We also tried the vendors' API hosts; they added nothing.)
+- The Headcount Labs postings dataset (5.7 million postings), including Greenhouse boards that only appear as postings on a company's own site, which we resolved by reading the board embedded in those pages.
+- MIT-licensed board lists on GitHub (open-ats-feed and smaller ones).
+- Guessing slugs from company domains for a random sample of US, UK and Canadian companies. About 1.7% of large companies had a board, and most of those were already on our list.
+
+So the number of companies with public boards on these three ATSes that can be found in open data is about 15,000, not 20,000 to 30,000. Getting closer would take either paid company data or mass slug-guessing against the vendors' APIs.
+
+## Rejected rows
+
+| Reason | Rows |
+|---|---|
+| `validation_failed` | 15,759 |
+| `careersite_unavailable` | 534 |
+| `duplicate_company_board` | 321 |
+| `auxiliary_board` | 84 |
+| `test_or_demo_board` | 57 |
+
+We also removed 8 LinkedIn links that pointed at another company's page, and 73 descriptions that were template text shared by three or more companies.

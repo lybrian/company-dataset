@@ -13,5 +13,7 @@ run:
 
 all: install test run
 
+# Removes generated working files only; keeps downloads (data/raw) and the deliverable (data/output).
 clean:
-	rm -rf .venv data
+	rm -rf .venv .pytest_cache data/cache data/intermediate data/review
+	find . -name __pycache__ -prune -exec rm -rf {} +

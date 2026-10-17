@@ -4,7 +4,7 @@ import csv
 from pathlib import Path
 
 from company_dataset.models import Reject, SourceMeta, SourceRecord
-from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, is_valid_slug
+from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, clean_code
 
 META = SourceMeta(
     name="lastroundai",
@@ -14,7 +14,7 @@ META = SourceMeta(
     license="CC-BY-4.0",
     license_url="https://creativecommons.org/licenses/by/4.0/",
     license_note="",
-    attribution="LastRound AI (lastroundai.com), crawled July-August 2026",
+    attribution="LastRound AI (lastroundai.com), crawled July-August 2026; see https://lastroundai.com/blog/salary-transparency-study-2026",
 )
 
 VENDOR_MAP = {"greenhouse": GREENHOUSE, "lever": LEVER, "ashby": ASHBY}
@@ -35,8 +35,9 @@ def parse(path: Path):
                 rejects.append(Reject(source=META.name, reason="unsupported_ats", detail=vendor or "(empty)", row_ref=ref, raw=dict(row)))
                 continue
             slug = (row.get("board_slug") or "").strip()
-            if not is_valid_slug(slug):
-                rejects.append(Reject(source=META.name, reason="invalid_slug", detail=slug, row_ref=ref, ats=ats, raw=dict(row)))
+            raw_slug, slug = slug, clean_code(ats, slug)
+            if slug is None:
+                rejects.append(Reject(source=META.name, reason="invalid_slug", detail=raw_slug, row_ref=ref, ats=ats, raw=dict(row)))
                 continue
             name = (row.get("company_name") or "").strip() or None
             records.append(
@@ -46,7 +47,6 @@ def parse(path: Path):
                     code=slug,
                     name=name,
                     row_ref=ref,
-                    raw=dict(row),
                 )
             )
     return records, rejects

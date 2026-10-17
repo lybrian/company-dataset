@@ -4,16 +4,12 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .DS_Store
+*.log
 
-# Cache - regenerated on each run
-data/cache/
-
-# Raw source downloads - large, can be re-downloaded
+# Pipeline working files. Rebuilt by `company-dataset all`.
 data/raw/
+data/cache/
+data/intermediate/
+data/review/
 
-# Logs
-validate.log
-
-# Keep output data and reports (deliverables)
-# data/output/  -- uncomment to track output
-# reports/      -- uncomment to track reports
+# Kept in git: data/output/ (the deliverable) and reports/

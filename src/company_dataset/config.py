@@ -6,6 +6,7 @@ RAW_DIR_NAME = "raw"
 CACHE_DIR_NAME = "cache"
 INTERMEDIATE_DIR_NAME = "intermediate"
 OUTPUT_DIR_NAME = "output"
+REVIEW_DIR_NAME = "review"
 REPORTS_DIR_NAME = "reports"
 
 DEFAULT_DATA_DIR = "data"
@@ -19,6 +20,7 @@ def resolve_dirs(data_dir: str | Path = DEFAULT_DATA_DIR) -> dict[str, Path]:
         "cache": base / CACHE_DIR_NAME,
         "intermediate": base / INTERMEDIATE_DIR_NAME,
         "output": base / OUTPUT_DIR_NAME,
+        "review": base / REVIEW_DIR_NAME,
         "reports": Path(REPORTS_DIR_NAME),
     }
     for key, path in dirs.items():

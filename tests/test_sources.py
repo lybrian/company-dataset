@@ -1,4 +1,7 @@
-from company_dataset.sources import kaleb, lastround, latmay, moonie
+import json
+from pathlib import Path
+
+from company_dataset.sources import feashliaa, headcountlabs, kaleb, lastround, latmay, moonie, openatsfeed
 
 LATMAY_CSV = "\ufeffcanonical_url,ats_platform\n" + (
     "https://job-boards.greenhouse.io/acme,Greenhouse\n"
@@ -151,4 +154,67 @@ def test_source_meta_has_licenses():
     assert latmay.META.license.startswith("CC-BY")
     assert lastround.META.license.startswith("CC-BY")
     assert moonie.META.license.startswith("CC0")
-    assert "no formal license" in kaleb.META.license_note.lower()
+    assert kaleb.META.license == "CC0-1.0"
+    assert "schema.org" in kaleb.META.license_note
+
+
+class TestFeashliaa:
+    def test_parse_valid_file(self, tmp_path: Path):
+        data = {
+            "greenhouse": ["stripe", "vercel"],
+            "lever": ["airtable"],
+            "ashby": ["0g", "0x"],
+        }
+        path = tmp_path / "companies.json"
+        path.write_text(json.dumps(data))
+        records, rejects = feashliaa.parse(path)
+        assert len(records) == 5
+        assert len(rejects) == 0
+        by_ats = {}
+        for r in records:
+            by_ats.setdefault(r.ats, []).append(r.code)
+        assert set(by_ats) == {"greenhouse", "lever", "ashby"}
+        assert by_ats["greenhouse"] == ["stripe", "vercel"]
+
+    def test_parse_empty_file(self, tmp_path: Path):
+        path = tmp_path / "companies.json"
+        path.write_text("{}")
+        records, rejects = feashliaa.parse(path)
+        assert records == []
+        assert rejects == []
+
+    def test_parse_missing_file(self, tmp_path: Path):
+        records, rejects = feashliaa.parse(tmp_path / "nonexistent.json")
+        assert records == []
+        assert rejects == []
+
+    def test_invalid_slugs_rejected(self, tmp_path: Path):
+        data = {"greenhouse": ["ok", "with/slash", "trailing;", "", ".hidden"]}
+        path = tmp_path / "companies.json"
+        path.write_text(json.dumps(data))
+        records, rejects = feashliaa.parse(path)
+        # A trailing ";" is a scraping artifact: cleaned off, then left to validation.
+        assert [r.code for r in records] == ["ok", "trailing"]
+        assert len(rejects) == 3
+        reasons = {r.reason for r in rejects}
+        assert reasons == {"invalid_slug"}
+
+    def test_meta_has_license(self):
+        assert feashliaa.META.license == "MIT"
+        assert "feashliaa" in feashliaa.META.name
+
+
+def test_openatsfeed_keeps_only_our_three_ats(tmp_path):
+    path = tmp_path / "tokens.json"
+    path.write_text('{"greenhouse": ["acme", " ", "abridge\\\\"], "ashby": ["Applied Compute"], "workable": ["x"]}')
+    records, rejects = openatsfeed.parse(path)
+    assert [(r.ats, r.code) for r in records] == [("greenhouse", "acme"), ("greenhouse", "abridge"), ("ashby", "Applied Compute")]
+    assert len(rejects) == 1
+
+
+def test_headcountlabs_parse(tmp_path):
+    path = tmp_path / "boards.csv"
+    path.write_text("ats,code,employer_name\nashby,0g,0g Labs\nworkday,x,X\ngreenhouse,,Nope\n")
+    records, rejects = headcountlabs.parse(path)
+    assert [(r.ats, r.code, r.name) for r in records] == [("ashby", "0g", "0g Labs")]
+    assert sorted(r.reason for r in rejects) == ["invalid_slug", "unsupported_ats"]

@@ -129,9 +129,17 @@ def test_is_valid_slug_still_accepts_special_char_company_names():
     assert is_valid_slug("survoy's")
 
 
-def test_ashby_rejects_css_fragment_urls():
-    assert parse_board_url("https://jobs.ashbyhq.com/100vw%3B") is None
-    assert parse_board_url("https://jobs.ashbyhq.com/Abridge%5C") is None
+def test_scraping_artifacts_are_cut_off_not_fatal():
+    assert parse_board_url("https://jobs.ashbyhq.com/Abridge%5C").code == "Abridge"
+    assert parse_board_url("https://jobs.ashbyhq.com/camber.%5Cr%5Cn%5Cr%5Cn").code == "camber."
+    assert parse_board_url("https://jobs.ashbyhq.com/block%3B").code == "block"
+    assert parse_board_url("https://jobs.ashbyhq.com/%3B") is None
+
+
+def test_ashby_slugs_may_contain_spaces_but_greenhouse_may_not():
+    assert parse_board_url("https://jobs.ashbyhq.com/Applied%20Compute").code == "Applied Compute"
+    assert parse_board_url("https://jobs.ashbyhq.com/Applied  Compute") is None
+    assert parse_board_url("https://job-boards.greenhouse.io/very%20awesome") is None
 
 
 def test_canonical_board_urls():

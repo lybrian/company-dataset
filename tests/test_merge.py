@@ -22,7 +22,6 @@ def test_same_key_merges():
     candidates, stats = merge_records(recs)
     assert len(candidates) == 1
     cand = candidates[0]
-    assert cand.row_count == 2
     assert stats.duplicate_rows == 1
     assert set(cand.sources) == {"lastroundai", "kaleb"}
     assert cand.name == "Acme Inc"

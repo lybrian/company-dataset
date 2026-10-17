@@ -29,7 +29,6 @@ class SourceRecord:
     name: str | None = None
     careersite_url: str | None = None
     row_ref: str = ""
-    raw: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -52,7 +51,6 @@ class Candidate:
     name_source: str = ""
     careersite_urls: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
-    row_count: int = 1
 
     @property
     def code(self) -> str:

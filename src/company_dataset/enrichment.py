@@ -4,13 +4,25 @@ import json
 import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from company_dataset.build import load_candidates
 from company_dataset.http import HttpClient, RequestError
 from company_dataset.models import utc_now
+from company_dataset.normalize import (
+    ASHBY,
+    GREENHOUSE,
+    LEVER,
+    canonical_board_url,
+    career_subdomain_parent,
+    clean_website,
+    host_of,
+    parse_board_url,
+)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -119,83 +131,459 @@ def ashby_facts(payload: dict) -> dict:
     return {"jobs_count": jobs_count, "country": country}
 
 
-_EXCLUDE_DOMAINS = (
-    "lever.co", "leverpatch.com", "greenhouse.io", "ashbyhq.com",
-    "fonts.googleapis.com", "fonts.gstatic.com", "gstatic.com",
-    "linkedin.com", "lnkd.in", "twitter.com", "x.com", "facebook.com",
-    "instagram.com", "youtube.com", "tiktok.com", "apple.com", "google.com",
-    "googletagmanager.com", "googleapis.com", "w3.org", "schema.org",
-    "cloudflare.com", "jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com",
-)
-
-_LINKEDIN_RE = re.compile(
-    r'href="(?:https?://(?:[a-z]+\.)?)?linkedin\.com/company/([A-Za-z0-9\-_.%]+)["/?]'
-)
-
-_DESC_RE = re.compile(
-    r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']{20,2000})["\']',
-    re.I,
-)
-_DESC_RE_REV = re.compile(
-    r'<meta[^>]+content=["\']([^"\']{20,2000})["\'][^>]+(?:name|property)=["\'](?:description|og:description)["\']',
-    re.I,
-)
+# ---------------------------------------------------------------------------
+# HTML page summaries
+# ---------------------------------------------------------------------------
 
 
-def extract_lever_website(html: str) -> str | None:
-    """Extract the company website URL from a Lever board page footer.
+class _PageParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.title_parts: list[str] = []
+        self.meta: dict[str, str] = {}
+        self.anchors: list[tuple[str, str]] = []
+        self._in_title = False
+        self._anchor_href: str | None = None
+        self._anchor_text: list[str] = []
 
-    Lever board pages often include a "Home Page" link in the footer pointing
-    at the company's own website. Returns the scheme + host (no path).
-    """
-    links = re.findall(r'href="(https?://[^"]+)"', html)
-    for link in links:
-        try:
-            parts = urlsplit(link)
-        except ValueError:
+    def handle_starttag(self, tag, attrs):
+        a = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "title":
+            self._in_title = True
+        elif tag == "meta":
+            key = (a.get("property") or a.get("name") or "").strip().lower()
+            if key and "content" in a and key not in self.meta:
+                self.meta[key] = a["content"]
+        elif tag == "a":
+            if self._anchor_href is not None:
+                self._close_anchor()
+            self._anchor_href = a.get("href", "")
+            self._anchor_text = []
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+        elif tag == "a" and self._anchor_href is not None:
+            self._close_anchor()
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title_parts.append(data)
+        if self._anchor_href is not None:
+            self._anchor_text.append(data)
+
+    def _close_anchor(self):
+        self.anchors.append((self._anchor_href or "", _WS_RE.sub(" ", "".join(self._anchor_text)).strip()))
+        self._anchor_href = None
+        self._anchor_text = []
+
+
+@dataclass
+class Page:
+    title: str = ""
+    meta: dict = field(default_factory=dict)
+    anchors: list = field(default_factory=list)
+    html: str = ""
+
+
+def parse_page(html: str) -> Page:
+    parser = _PageParser()
+    try:
+        parser.feed(html or "")
+        parser.close()
+    except Exception:
+        pass
+    title = _WS_RE.sub(" ", unescape("".join(parser.title_parts))).strip()
+    return Page(title=title, meta=parser.meta, anchors=parser.anchors, html=html or "")
+
+
+_LINKEDIN_COMPANY_RE = re.compile(r"^https?://(?:[a-z]{2,3}\.)?linkedin\.com/company/([^/?#\s]+)", re.I)
+
+
+def linkedin_company_slugs(page: Page) -> list[str]:
+    """Distinct LinkedIn /company/ slugs linked from the page, in document order."""
+    seen: list[str] = []
+    for href, _ in page.anchors:
+        m = _LINKEDIN_COMPANY_RE.match(href.strip())
+        if not m:
             continue
-        host = (parts.hostname or "").lower()
-        if not host:
-            continue
-        if any(host == d or host.endswith("." + d) or d in link for d in _EXCLUDE_DOMAINS):
-            continue
-        # Strip path — return just scheme + host as the company website
-        return f"{parts.scheme}://{parts.netloc}"
-    return None
+        slug = unquote(m.group(1)).strip().rstrip("/")
+        if slug and slug.lower() not in {s.lower() for s in seen}:
+            seen.append(slug)
+    return seen
 
 
-def extract_linkedin(html: str) -> str | None:
-    """Extract a LinkedIn company URL from a company's own homepage HTML."""
-    m = _LINKEDIN_RE.search(html)
-    if not m:
-        return None
-    slug = m.group(1).rstrip("/")
-    if not slug:
-        return None
+def linkedin_url(slug: str) -> str:
     return f"https://www.linkedin.com/company/{slug}"
 
 
-def extract_description(html: str) -> str | None:
-    """Extract a company-level description from homepage meta tags."""
-    m = _DESC_RE.search(html) or _DESC_RE_REV.search(html)
-    if not m:
-        return None
-    text = re.sub(r"<[^>]+>", " ", m.group(1))
-    text = re.sub(r"&[a-z]+;", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) < 20:
-        return None
-    return text[:1000]
+def board_refs(page: Page) -> list[str]:
+    """ATS boards the page links to, as "ats:code" (code casefolded)."""
+    refs: list[str] = []
+    for href, _ in page.anchors:
+        parsed = parse_board_url(href)
+        if parsed:
+            ref = f"{parsed.ats}:{parsed.code.casefold()}"
+            if ref not in refs:
+                refs.append(ref)
+    for m in re.finditer(r"""["'](https?://[^"'\s]+(?:greenhouse\.io|lever\.co|ashbyhq\.com)[^"'\s]*)["']""", page.html):
+        parsed = parse_board_url(m.group(1))
+        if parsed:
+            ref = f"{parsed.ats}:{parsed.code.casefold()}"
+            if ref not in refs:
+                refs.append(ref)
+    return refs
 
 
-def _fetch_html(client: HttpClient, url: str, max_bytes: int = 2_000_000) -> str:
+# Phrases that mark recruiting copy, legal text or placeholder content rather than a
+# description of what the company does.
+_BOILERPLATE_RE = re.compile(
+    r"(^(null|none|undefined|n/?a|test|home|homepage|welcome)\.?$"
+    r"|test job board|lorem ipsum|we are (always )?looking for|we're (always )?looking for"
+    r"|take a look at our open|open positions|current openings|join (our|the) team"
+    r"|pre-employment|equal opportunity|eeo|applicants? (will|must)|apply (now|today|below)"
+    r"|^(join|we['’]re seeking|we are seeking|want to be part)\b|join (us|our [a-z ]{0,20}team)"
+    r"|careers? (at|with|opportunit)|learn and grow|rare opportunity|hire great people|we['’]re hiring"
+    r"|cookies?\b.*\b(consent|policy|accept)|enable javascript|just a moment|access denied"
+    r"|page not found|coming soon|under construction|domain (is )?for sale|buy this domain"
+    r"|attention required|verify you are human|privacy policy)",
+    re.I,
+)
+_LABEL_PREFIX_RE = re.compile(r"^(about( us| the company)?|who we are|company (description|overview)|overview)\s*[:\-–—]\s*", re.I)
+MAX_DESCRIPTION_CHARS = 600
+MIN_DESCRIPTION_CHARS = 40
+
+
+_MOJIBAKE_RE = re.compile("[ÃÄÅ][\x80-\xbf]|â€|Â[\xa0-\xbf]")
+
+
+def fix_mojibake(s: str) -> str:
+    """Undo UTF-8 text that was decoded as Latin-1/CP1252 ("LÃ¶sungen" -> "Lösungen")."""
+    if not _MOJIBAKE_RE.search(s):
+        return s
+    # "à " is C3 A0 20; decoded wrongly that's "Ã\xa0 ", which whitespace normalization
+    # collapses to "Ã ". Restore the \xa0 and keep the real space after it.
+    for candidate in (s, re.sub(r"([ÃÂ]) ", "\\1\xa0 ", s)):
+        for codec in ("cp1252", "latin-1"):
+            try:
+                return candidate.encode(codec).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+    return s
+
+
+def clean_description(text) -> str | None:
+    """A company description, or None when the text is boilerplate or too thin to use."""
+    if not isinstance(text, str):
+        return None
+    s = strip_html(fix_mojibake(text))
+    s = fix_mojibake(s)
+    if _MOJIBAKE_RE.search(s):
+        return None  # garbled beyond repair; better empty than unreadable
+    s = _LABEL_PREFIX_RE.sub("", s).strip()
+    if len(s) < MIN_DESCRIPTION_CHARS:
+        return None
+    head = s[:200]
+    if _BOILERPLATE_RE.search(head):
+        return None
+    if len(s) > MAX_DESCRIPTION_CHARS:
+        cut = s[:MAX_DESCRIPTION_CHARS]
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        s = cut[: end + 1] if end >= MIN_DESCRIPTION_CHARS else cut.rsplit(" ", 1)[0] + "…"
+    return s
+
+
+def homepage_description(page: Page) -> str | None:
+    for key in ("description", "og:description", "twitter:description"):
+        desc = clean_description(page.meta.get(key))
+        if desc:
+            return desc
+    return None
+
+
+_TITLE_SPLIT_RE = re.compile(r"\s+[|\-–—:•·]\s+")
+
+
+def site_name(page: Page) -> str:
+    name = (page.meta.get("og:site_name") or "").strip()
+    if name:
+        return unescape(name)
+    parts = [p.strip() for p in _TITLE_SPLIT_RE.split(page.title) if p.strip()]
+    return parts[0] if parts else ""
+
+
+_LEGAL_SUFFIX_RE = re.compile(r"\b(inc|llc|ltd|limited|corp|corporation|co|company|plc|gmbh|llp|lp|pbc|holdings|group)\b\.?", re.I)
+
+
+def name_key(name) -> str:
+    if not isinstance(name, str):
+        return ""
+    return re.sub(r"[^a-z0-9]", "", _LEGAL_SUFFIX_RE.sub(" ", name.lower()))
+
+
+def names_match(a, b) -> bool:
+    ka, kb = name_key(a), name_key(b)
+    if len(ka) < 3 or len(kb) < 3:
+        return False
+    return ka == kb or (len(ka) >= 4 and ka in kb) or (len(kb) >= 4 and kb in ka)
+
+
+_BOARD_LABEL_RE = re.compile(
+    r"(\bcareers?\b|\bjobs?\b|job board|open roles|openings|vacancies|\binternships?\b|\bgraduates?\b"
+    r"|\bcontractors?\b|\bvia\b|\btest\b|career (site|website)|\bhiring\b|\brecruit)",
+    re.I,
+)
+
+
+_INVISIBLE_RE = re.compile("[​-‏‪-‮⁠﻿]")
+
+# Vendor demo / sandbox / test boards answer the API like any other board but are not
+# companies. "Sandbox" alone is a real word in brand names (SandboxAQ, Sandbox VR), so
+# it only counts when it follows another word ("Agoda Sandbox", "🔴 Sandbox").
+_TEST_NAME_RE = re.compile(
+    r"\S.*\bsandbox\b|\bdemo\b|^testing\b|testing purposes|\btest board\b|do not use|staging site"
+    r"|^example corp|internal training|confidential|^test\d*$|^testes$|testjobpost|_test\b|accessibility tests|^democorp$",
+    re.I,
+)
+_TEST_CODE_RE = re.compile(r"sandbox\d*$|^demo\.|leverdemo|salesdemo|^testing$|^test\d*$|^example$", re.I)
+
+# Secondary boards a company runs next to its main one: internal mobility, referral
+# intake, talent pools, general applications. Real boards, but not separate companies,
+# and their names are labels ("Coupang Internal", "Buildkite Talent Community").
+_AUX_NAME_RE = re.compile(
+    r"\binternal\b|referrals?\b|talent (community|pool|network)|general application|internal mobility"
+    r"|employees only|staff and referrals|^talent pool$",
+    re.I,
+)
+
+
+def is_test_board(name, code: str) -> bool:
+    return bool((isinstance(name, str) and _TEST_NAME_RE.search(name)) or _TEST_CODE_RE.search(code or ""))
+
+
+def is_auxiliary_board(name) -> bool:
+    return bool(isinstance(name, str) and _AUX_NAME_RE.search(name))
+
+
+def clean_name(name, code: str = "") -> str | None:
+    """A usable company name, or None for board labels and slug-shaped placeholders."""
+    if not isinstance(name, str):
+        return None
+    s = _WS_RE.sub(" ", _INVISIBLE_RE.sub("", fix_mojibake(unescape(name)))).strip()
+    # Decoration around a name ("*Owl Labs*", "-ASG-") is not part of it.
+    s = re.sub(r"^[*\-_~ ]+|[*\-_~ ]+$", "", s)
+    if len(s) < 2 or s.lower() in ("null", "none", "undefined", "jobs", "careers"):
+        return None
+    if _BOARD_LABEL_RE.search(s):
+        return None
+    if " " not in s and re.search(r"[-_]", s) and (not code or s.casefold() == code.casefold()):
+        return None
+    return s
+
+
+def lever_home_page(page: Page) -> str | None:
+    """The company website from a Lever board's "<Company> Home Page" footer link."""
+    for href, text in page.anchors:
+        if text.lower().endswith("home page"):
+            site = clean_website(href)
+            if site:
+                return site
+    return None
+
+
+def ashby_organization(html: str) -> dict | None:
+    """The organization block of an Ashby hosted page's window.__appData, if present."""
+    marker = "window.__appData"
+    idx = (html or "").find(marker)
+    if idx < 0:
+        return None
+    start = html.find("{", idx)
+    if start < 0:
+        return None
+    try:
+        data, _ = json.JSONDecoder().raw_decode(html[start:])
+    except ValueError:
+        return None
+    org = data.get("organization") if isinstance(data, dict) else None
+    return org if isinstance(org, dict) else None
+
+
+def summarize_page(status: str, final_url: str, html: str) -> dict:
+    """What we keep from a fetched page; raw HTML is not stored."""
+    entry = {"status": status, "final_url": final_url, "fetched_at": utc_now()}
+    if status != "ok":
+        return entry
+    page = parse_page(html)
+    org = ashby_organization(html)
+    entry.update({
+        "title": page.title[:300],
+        "site_name": site_name(page)[:200],
+        "description": homepage_description(page),
+        "linkedin_slugs": linkedin_company_slugs(page)[:10],
+        "board_refs": board_refs(page)[:50],
+        "lever_home_page": lever_home_page(page),
+        "ashby_org": {
+            "name": org.get("name"),
+            "website": org.get("publicWebsite"),
+        } if org else None,
+        "ashby_appdata": "window.__appData" in html,
+    })
+    return entry
+
+
+FINAL_STATUSES = ("ok", "http_404", "http_410")
+
+_HREF_RE = re.compile(r'href="(https?://[^"]+)"')
+CONTENT_JOBS_SCANNED = 30
+
+
+def greenhouse_content_url(code: str) -> str:
+    from urllib.parse import quote
+
+    return f"https://boards-api.greenhouse.io/v1/boards/{quote(code, safe='')}/jobs?content=true"
+
+
+def content_sites(payload) -> list[list]:
+    """Company-site candidates linked from a board's own job ads, with how many ads link each."""
+    jobs = payload.get("jobs") if isinstance(payload, dict) else None
+    counts: Counter[str] = Counter()
+    for job in (jobs or [])[:CONTENT_JOBS_SCANNED]:
+        if not isinstance(job, dict):
+            continue
+        sites = set()
+        for href in _HREF_RE.findall(unescape(job.get("content") or "")):
+            site = clean_website(href)
+            if site:
+                sites.add(site)
+        counts.update(sites)
+    return [[site, n] for site, n in counts.most_common(5)]
+
+
+def fetch_greenhouse_content(client: HttpClient, url: str) -> dict:
     try:
         resp = client.get(url)
-        if resp.status == 200:
-            return resp.text[:max_bytes]
-    except RequestError:
-        pass
-    return ""
+    except RequestError as exc:
+        return {"status": "error", "error": str(exc)[:200], "fetched_at": utc_now()}
+    if resp.status != 200:
+        return {"status": f"http_{resp.status}", "fetched_at": utc_now()}
+    try:
+        payload = resp.json()
+    except ValueError:
+        return {"status": "invalid_json", "fetched_at": utc_now()}
+    return {"status": "ok", "content_sites": content_sites(payload), "fetched_at": utc_now()}
+
+
+def content_website_candidates(board: "Board", content_page: dict | None) -> list[tuple[str, int]]:
+    """(site, ads linking it), careers-style domains excluded, career subdomains replaced by parent."""
+    out: list[tuple[str, int]] = []
+    for site, n in (content_page or {}).get("content_sites") or []:
+        host = host_of(site)
+        parent = career_subdomain_parent(host)
+        if parent:
+            site, host = f"https://{parent}", parent
+        if re.search(r"career|jobs", host.split(".")[0]):
+            continue
+        if site not in [s for s, _ in out]:
+            out.append((site, n))
+    return out[:3]
+
+
+def fetch_page(client: HttpClient, url: str, max_bytes: int = 3_000_000) -> dict:
+    try:
+        resp = client.get(url)
+    except RequestError as exc:
+        return {"status": "error", "error": str(exc)[:200], "final_url": "", "fetched_at": utc_now()}
+    if resp.status == 200:
+        return summarize_page("ok", resp.url, resp.text[:max_bytes])
+    return {"status": f"http_{resp.status}", "final_url": resp.url, "fetched_at": utc_now()}
+
+
+# ---------------------------------------------------------------------------
+# Board resolution: which values each board gets, and from where
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Board:
+    key: str
+    ats: str
+    code: str
+    region: str | None
+    careersite_url: str
+    names: dict = field(default_factory=dict)
+
+
+def board_from_validation(cand, outcome: dict) -> Board:
+    code = outcome.get("code_validated") or cand.code
+    # Only the host that actually answered decides the region; a source's "eu" hint
+    # is just the order validation tried hosts in.
+    region = "eu" if cand.ats == LEVER and outcome.get("region_answered") == "eu" else None
+    return Board(
+        key=cand.key,
+        ats=cand.ats,
+        code=code,
+        region=region,
+        careersite_url=canonical_board_url(cand.ats, code, region),
+    )
+
+
+def vendor_websites(board: Board, outcome: dict, vendor_page: dict | None) -> list[tuple[str, str]]:
+    """(website, basis) pairs attested by the ATS vendor itself, best first."""
+    out: list[tuple[str, str]] = []
+    if board.ats == ASHBY and vendor_page and vendor_page.get("ashby_org"):
+        site = clean_website(vendor_page["ashby_org"].get("website"))
+        if site:
+            out.append((site, "ashby_public_website"))
+    if board.ats == LEVER and vendor_page and vendor_page.get("lever_home_page"):
+        out.append((vendor_page["lever_home_page"], "lever_home_page_link"))
+    if board.ats == GREENHOUSE:
+        site = clean_website(outcome.get("website_url"))
+        if site:
+            out.append((site, "greenhouse_job_url_origin"))
+    expanded: list[tuple[str, str]] = []
+    for site, basis in out:
+        parent = career_subdomain_parent(host_of(site))
+        if parent:
+            expanded.append((f"https://{parent}", basis + "_parent"))
+        expanded.append((site, basis))
+    return expanded
+
+
+def careersite_status(board: Board, vendor_page: dict | None) -> str:
+    """ok, dead (vendor page gone) or unknown (not fetched / transient error)."""
+    if board.ats == GREENHOUSE:
+        return "ok"
+    if not vendor_page:
+        return "unknown"
+    status = vendor_page.get("status")
+    if status in ("http_404", "http_410"):
+        return "dead"
+    if status != "ok":
+        return "unknown"
+    if board.ats == ASHBY and vendor_page.get("ashby_appdata") and not vendor_page.get("ashby_org"):
+        return "dead"
+    return "ok"
+
+
+def homepage_supports(page: dict | None, board: Board, name: str | None) -> bool:
+    """Does this homepage identify itself as the board's company?"""
+    if not page or page.get("status") != "ok":
+        return False
+    if f"{board.ats}:{board.code.casefold()}" in (page.get("board_refs") or []):
+        return True
+    if name and (names_match(page.get("site_name"), name) or names_match(page.get("title"), name)):
+        return True
+    return False
+
+
+def landing_site(url: str, page: dict | None) -> str | None:
+    """The site a homepage request actually landed on (follows cross-domain redirects)."""
+    if page and page.get("status") == "ok" and page.get("final_url"):
+        final = clean_website(page["final_url"])
+        if final:
+            return final
+        return None
+    return clean_website(url)
 
 
 def run_enrich(
@@ -203,119 +591,108 @@ def run_enrich(
     client: HttpClient | None = None,
     max_workers: int = 10,
     timeout: float = 20.0,
+    reference=None,
 ) -> dict:
-    """Enrich valid boards with website_url (Lever footer), linkedin_url and description (homepage).
+    """Fetch vendor board pages and company homepages, caching one summary per URL.
 
-    Reads the validation cache for valid boards, fetches company pages politely,
-    and stores results in data/cache/enrichment.json keyed by board key.
+    Cache entries with a final status (ok / 404 / 410) are reused; errors and other
+    statuses are retried on the next run, so a transient failure never sticks.
     """
-    client = client or HttpClient(timeout=timeout, per_host_interval=0.1)
-    cache_path = Path(dirs["cache"]) / "enrichment.json"
-    cache: dict[str, dict] = {}
+    from company_dataset import reference as reference_mod
+
+    client = client or HttpClient(timeout=timeout, per_host_interval=0.25, max_attempts=2)
+    cache_path = Path(dirs["cache"]) / "pages.json"
+    pages: dict[str, dict] = {}
     if cache_path.exists():
         try:
-            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            pages = json.loads(cache_path.read_text(encoding="utf-8"))
         except ValueError:
-            cache = {}
+            pages = {}
 
-    candidates = load_candidates(dirs)
     validation_path = Path(dirs["cache"]) / "validation.json"
     if not validation_path.exists():
         print("[enrich] no validation cache found; run validate stage first")
         return {}
     validation = json.loads(validation_path.read_text(encoding="utf-8"))
-
-    valid_boards = []
-    for cand in candidates:
-        key = cand.key
-        outcome = validation.get(key)
+    boards: list[tuple[Board, dict]] = []
+    for cand in load_candidates(dirs):
+        outcome = validation.get(cand.key)
         if outcome and outcome.get("status") == "valid":
-            valid_boards.append({
-                "key": key,
-                "ats": cand.ats,
-                "code": cand.code,
-                "careersite_url": f"https://jobs.lever.co/{cand.code}" if cand.ats == "lever" else "",
-                "website_url": outcome.get("website_url") or "",
-                "description": outcome.get("description") or "",
-            })
+            board = board_from_validation(cand, outcome)
+            board.names = {"source": cand.name or ""}
+            boards.append((board, outcome))
+    print(f"[enrich] {len(boards)} valid boards")
 
-    print(f"[enrich] {len(valid_boards)} valid boards to enrich")
+    def fetch_all(urls: list[str], label: str, fetcher=fetch_page):
+        todo = [u for u in dict.fromkeys(urls) if pages.get(u, {}).get("status") not in FINAL_STATUSES]
+        print(f"[enrich] {label}: {len(todo)} to fetch ({len(set(urls)) - len(todo)} cached)", flush=True)
+        done = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(fetcher, client, u): u for u in todo}
+            for future in as_completed(futures):
+                pages[futures[future]] = future.result()
+                done += 1
+                if done % 250 == 0:
+                    _save(cache_path, pages)
+                    print(f"[enrich] {label}: {done}/{len(todo)}", flush=True)
+        _save(cache_path, pages)
 
-    # Phase 1: discover websites for Lever boards (fetch board page, extract footer link)
-    lever_todo = [
-        b for b in valid_boards
-        if b["ats"] == "lever"
-        and not b["website_url"]
-        and not cache.get(b["key"], {}).get("website_url")
-        and not cache.get(b["key"], {}).get("website_checked")
-    ]
-    print(f"[enrich] phase 1: {len(lever_todo)} Lever boards to fetch for website discovery")
-
-    def _lever_fetch(board):
-        html = _fetch_html(client, board["careersite_url"])
-        website = extract_lever_website(html) if html else None
-        entry = cache.setdefault(board["key"], {})
-        entry["website_checked"] = True
-        if website:
-            entry["website_url"] = website
-        return website
-
-    done = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_lever_fetch, b): b for b in lever_todo}
-        for future in as_completed(futures):
-            future.result()
-            done += 1
-            if done % 250 == 0:
-                cache_path.write_text(json.dumps(cache), encoding="utf-8")
-                print(f"[enrich] lever phase: {done}/{len(lever_todo)}")
-
-    # Phase 2: fetch homepages for boards with a known website
-    homepage_todo = []
-    for board in valid_boards:
-        entry = cache.get(board["key"], {})
-        website = board["website_url"] or entry.get("website_url") or ""
-        if website and not entry.get("homepage_checked"):
-            homepage_todo.append({**board, "website_url": website})
-
-    print(f"[enrich] phase 2: {len(homepage_todo)} homepages to fetch for linkedin/description")
-
-    def _homepage_fetch(board):
-        html = _fetch_html(client, board["website_url"])
-        entry = cache.setdefault(board["key"], {})
-        entry["homepage_checked"] = True
-        if html:
-            linkedin = extract_linkedin(html)
-            description = extract_description(html)
-            if linkedin:
-                entry["linkedin_url"] = linkedin
-            if description and not board["description"]:
-                entry["description"] = description
-        return bool(html)
-
-    done = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_homepage_fetch, b): b for b in homepage_todo}
-        for future in as_completed(futures):
-            future.result()
-            done += 1
-            if done % 250 == 0:
-                cache_path.write_text(json.dumps(cache), encoding="utf-8")
-                print(f"[enrich] homepage phase: {done}/{len(homepage_todo)}")
-
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(cache), encoding="utf-8")
-
-    stats = {
-        "generated_at": utc_now(),
-        "boards_enriched": len(cache),
-        "lever_websites_found": sum(1 for v in cache.values() if v.get("website_url")),
-        "linkedin_urls_found": sum(1 for v in cache.values() if v.get("linkedin_url")),
-        "descriptions_found": sum(1 for v in cache.values() if v.get("description")),
-    }
-    (Path(dirs["intermediate"]) / "enrichment_stats.json").write_text(json.dumps(stats, indent=2))
-    print(
-        f"[enrich] done: {stats['lever_websites_found']} websites, "
-        f"{stats['linkedin_urls_found']} linkedin_urls, {stats['descriptions_found']} descriptions"
+    fetch_all([b.careersite_url for b, _ in boards if b.ats in (LEVER, ASHBY)], "vendor board pages")
+    fetch_all(
+        [greenhouse_content_url(b.code) for b, o in boards if b.ats == GREENHOUSE and not vendor_websites(b, o, None) and (o.get("jobs_count") or 0) > 0],
+        "greenhouse job ads (website links)",
+        fetcher=fetch_greenhouse_content,
     )
+
+    ref = reference if reference is not None else reference_mod.load_or_build(dirs, boards, pages)
+
+    homepage_urls: list[str] = []
+    for board, outcome in boards:
+        for site, _ in vendor_websites(board, outcome, pages.get(board.careersite_url)):
+            homepage_urls.append(site)
+        if board.ats == GREENHOUSE:
+            for site, _ in content_website_candidates(board, pages.get(greenhouse_content_url(board.code))):
+                homepage_urls.append(site)
+        for site in ref.name_candidates(board_name_for_lookup(board, outcome, pages.get(board.careersite_url)), board.code):
+            homepage_urls.append(site)
+    fetch_all(homepage_urls, "company homepages")
+    if reference is None:
+        # Rebuild so domains reached via homepage redirects are covered too.
+        reference_mod.load_or_build(dirs, boards, pages)
+
+    statuses = Counter(p.get("status") for p in pages.values())
+    stats = {"generated_at": utc_now(), "pages_cached": len(pages), "page_statuses": dict(statuses)}
+    (Path(dirs["intermediate"]) / "enrichment_stats.json").write_text(json.dumps(stats, indent=2))
+    print(f"[enrich] done: {dict(statuses)}")
     return stats
+
+
+def board_name_for_lookup(board: Board, outcome: dict, vendor_page: dict | None) -> str | None:
+    """Best vendor/source name for a board, used to look it up in the reference dataset."""
+    for name in vendor_names(board, outcome, vendor_page):
+        return name
+    return clean_name(board.names.get("source"), board.code)
+
+
+def vendor_names(board: Board, outcome: dict, vendor_page: dict | None) -> list[str]:
+    names: list[str] = []
+    if board.ats == GREENHOUSE:
+        n = clean_name(outcome.get("company_name"), board.code)
+        if n:
+            names.append(n)
+    if board.ats == ASHBY and vendor_page and vendor_page.get("ashby_org"):
+        n = clean_name(vendor_page["ashby_org"].get("name"), board.code)
+        if n:
+            names.append(n)
+    if board.ats == LEVER and vendor_page and vendor_page.get("status") == "ok":
+        n = clean_name(vendor_page.get("title"), board.code)
+        if n:
+            names.append(n)
+    return names
+
+
+def _save(path: Path, data: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.replace(path)

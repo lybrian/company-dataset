@@ -4,69 +4,39 @@ import json
 from company_dataset.report import run_report
 
 
-def _write_json(path, payload):
-    path.write_text(json.dumps(payload))
-
-
-def test_report_renders_contributed_candidates(tmp_path):
-    dirs = {
-        "data": tmp_path,
-        "raw": tmp_path / "raw",
-        "cache": tmp_path / "cache",
-        "intermediate": tmp_path / "intermediate",
-        "output": tmp_path / "output",
-        "reports": tmp_path / "reports",
-    }
+def test_report_states_counts_gap_duplicates_and_sources(tmp_path):
+    dirs = {k: tmp_path / k for k in ("raw", "cache", "intermediate", "output", "reports")}
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
-    intermediate = dirs["intermediate"]
-    _write_json(intermediate / "build_stats.json", {
-        "total_source_rows": 10,
-        "in_scope_records": 6,
-        "rejected_source_rows": 4,
-        "duplicate_rows_merged": 2,
-        "unique_candidates": 4,
-        "per_source": {
-            "latmay": {"rows_read": 10, "records": 6, "rejects": 4, "reject_reasons": {}, "file_present": True},
-            "moonie": {"rows_read": 3, "records": 3, "rejects": 0, "reject_reasons": {}, "file_present": True},
-        },
-    })
-    _write_json(intermediate / "validation_stats.json", {
-        "checked": 4,
-        "by_status": {"valid": 3, "invalid": 1, "unresolved": 0},
-        "by_ats": {"lever": {"valid": 3, "invalid": 1}},
-    })
-    _write_json(intermediate / "export_stats.json", {
-        "exported_companies": 3,
-        "by_ats": {"lever": 3},
-        "completeness": {
-            f: {"non_null": 0 if f == "linkedin_url" else 3, "total": 3, "pct": 0.0 if f == "linkedin_url" else 100.0}
-            for f in ("name", "description", "linkedin_url", "website_url", "careersite_url", "ats_system", "ats_code")
-        },
-        "complete_all_required_fields": {"count": 0, "total": 3, "pct": 0.0},
-        "country_coverage": {"rows_with_country": 2, "pct": 66.6, "breakdown": {"US": 2}},
-        "name_is_slug_count": 0,
-        "website_duplicate_flags": 0,
-    })
-    _write_json(intermediate / "manifest.json", [
-        {"source": "latmay", "license": "CC-BY-4.0", "license_note": ""},
-        {"source": "moonie", "license": "CC0-1.0", "license_note": ""},
-    ])
-    out_manifest = dirs["output"] / "source_manifest.csv"
-    columns = ["source", "description", "download_url", "license", "license_url", "license_note", "attribution", "downloaded_at", "sha256", "size_bytes", "rows_read", "in_scope_records", "rejected_rows", "contributed_candidates"]
-    with open(out_manifest, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(columns)
-        writer.writerow(["latmay", "x", "y", "CC-BY-4.0", "", "", "", "", "abc", 1, 10, 6, 4, 7])
-        writer.writerow(["moonie", "x", "y", "CC0-1.0", "", "", "", "", "def", 1, 3, 3, 0, 4])
+    (dirs["intermediate"] / "build_stats.json").write_text(json.dumps({"unique_candidates": 10}))
+    (dirs["intermediate"] / "validation_stats.json").write_text(json.dumps({"by_status": {"valid": 6, "invalid": 4}}))
+    fields = ("name", "description", "linkedin_url", "website_url", "careersite_url", "ats_system", "ats_code")
+    (dirs["intermediate"] / "export_stats.json").write_text(json.dumps({
+        "complete_companies": 4,
+        "live_companies_after_collapse": 5,
+        "incomplete_companies": 1,
+        "boards_merged_into_companies": 1,
+        "same_name_not_merged": 2,
+        "same_name_not_merged_in_deliverable": 1,
+        "completeness_live": {f: {"non_null": 4 if f == "linkedin_url" else 5, "total": 5, "pct": 80.0 if f == "linkedin_url" else 100.0} for f in fields},
+        "missing_field_counts": {"linkedin_url": 1},
+        "country_complete": {"rows_with_country": 4, "us_uk_ca": 3, "breakdown": {"US": 2, "GB": 1, "DE": 1}},
+        "post_validation_rejects": {"careersite_unavailable": 1, "duplicate_company_board": 1},
+        "source_overlap": {"by_source_count": {"1": 2, "2": 3}, "in_live_boards": {"latmay": 4}, "sole_source_for": {"latmay": 2}},
+    }))
+    with open(dirs["output"] / "source_manifest.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=["source", "role", "license"])
+        w.writeheader()
+        w.writerow({"source": "latmay", "role": "boards", "license": "CC-BY-4.0"})
 
     run_report(dirs)
     text = (dirs["reports"] / "quality_report.md").read_text(encoding="utf-8")
-    assert "| latmay | CC-BY-4.0 | 10 | 6 | 4 | 7 |" in text
-    assert "| moonie | CC0-1.0 | 3 | 3 | 0 | 4 |" in text
-    assert "**Exported companies** | **3**" in text
-    assert "**Records complete across all 7 required fields** | **0 (0.0%)**" in text
-    assert "| ats_system | 3 | 3 | 100.0% |" in text
-    # The "Metadata completeness" table must list the 7 required fields only;
-    # `country` belongs in its own "Country coverage" section, not here.
-    assert "| country | 2 | 3 | 66.6% |" not in text
+    assert "`companies.csv` has **4 companies**" in text
+    assert "That is 19,996 short of the 20,000" in text
+    assert "| `linkedin_url` | 4 | 5 | 80.0% |" in text
+    assert "| **Live companies** | **5** |" in text
+    assert "Boards folded into another company's row: 1" in text
+    assert "2 (1 of them in `companies.csv`)" in text
+    assert "2 US, 1 UK, 0 Canada (75.0% of rows)" in text
+    assert "| latmay | board slugs | CC-BY-4.0 | 4 | 2 |" in text
+    assert "60.0% of live boards turn up in two or more" in text

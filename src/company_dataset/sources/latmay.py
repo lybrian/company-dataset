@@ -50,7 +50,6 @@ def parse(path: Path):
                     region=parsed.region,
                     careersite_url=url,
                     row_ref=ref,
-                    raw=dict(row),
                 )
             )
     return records, rejects

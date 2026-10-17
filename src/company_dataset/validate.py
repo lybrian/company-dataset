@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -177,12 +178,16 @@ class BoardValidator:
             )
         return BoardValidation(ats=cand.ats, code=cand.code, status=INVALID, http_status=404, error="board_not_found", checked_at=now)
 
-    def validate_many(self, candidates, limit: int | None = None, revalidate: bool = False) -> dict[str, BoardValidation]:
+    def validate_many(self, candidates, limit: int | None = None, revalidate: bool = False, max_age_days: float | None = None) -> dict[str, BoardValidation]:
         results: dict[str, BoardValidation] = {}
         todo: list[Candidate] = []
+        cutoff = None
+        if max_age_days is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         for cand in candidates:
             cached = self.cache.get(cand.key)
-            if cached and not revalidate and cached.get("status") in (VALID, INVALID):
+            fresh = cached is not None and (cutoff is None or (cached.get("checked_at") or "") >= cutoff)
+            if cached and fresh and not revalidate and cached.get("status") in (VALID, INVALID):
                 results[cand.key] = BoardValidation.from_dict(cached)
             else:
                 todo.append(cand)
@@ -221,6 +226,7 @@ def run_validate(
     timeout: float = 20.0,
     limit: int | None = None,
     revalidate: bool = False,
+    max_age_days: float | None = None,
 ) -> dict:
     candidates = load_candidates(dirs)
     if not candidates:
@@ -234,7 +240,7 @@ def run_validate(
         progress_every=250,
         logger=print,
     )
-    results = validator.validate_many(candidates, limit=limit, revalidate=revalidate)
+    results = validator.validate_many(candidates, limit=limit, revalidate=revalidate, max_age_days=max_age_days)
     by_status = Counter(v.status for v in results.values())
     by_ats: dict[str, Counter] = {}
     for v in results.values():

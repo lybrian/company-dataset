@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from company_dataset.models import Reject, SourceMeta, SourceRecord
-from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, is_valid_slug
+from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, clean_code
 
 META = SourceMeta(
     name="moonie",
@@ -43,8 +43,9 @@ def parse(path: Path):
                 rejects.append(Reject(source=META.name, reason="unsupported_ats", detail=provider or "(empty)", row_ref=ref, raw=row))
                 continue
             slug = (row.get("slug") or "").strip()
-            if not is_valid_slug(slug):
-                rejects.append(Reject(source=META.name, reason="invalid_slug", detail=slug, row_ref=ref, ats=ats, raw=row))
+            raw_slug, slug = slug, clean_code(ats, slug)
+            if slug is None:
+                rejects.append(Reject(source=META.name, reason="invalid_slug", detail=raw_slug, row_ref=ref, ats=ats, raw=row))
                 continue
             status = (row.get("status") or "").strip()
             if status == "dead":
@@ -60,7 +61,6 @@ def parse(path: Path):
                     region=region,
                     name=name,
                     row_ref=ref,
-                    raw=row,
                 )
             )
     return records, rejects

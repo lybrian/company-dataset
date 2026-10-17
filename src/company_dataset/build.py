@@ -9,7 +9,7 @@ from pathlib import Path
 from company_dataset.models import Candidate, utc_now
 from company_dataset.sources import SOURCES
 
-NAME_PRIORITY = ("lastroundai", "moonie", "kaleb", "latmay")
+NAME_PRIORITY = ("lastroundai", "headcountlabs", "moonie", "kaleb", "latmay")
 
 
 @dataclass
@@ -45,11 +45,9 @@ def merge_records(records) -> tuple[list[Candidate], MergeStats]:
                 region=rec.region,
                 careersite_urls=[rec.careersite_url] if rec.careersite_url else [],
                 sources=[rec.source],
-                row_count=1,
             )
             continue
         stats.duplicate_rows += 1
-        cand.row_count += 1
         if rec.code not in cand.codes:
             cand.codes.append(rec.code)
         if rec.region == "eu":
@@ -87,7 +85,7 @@ def run_build(dirs: dict) -> dict:
     candidates_path = dirs["intermediate"] / "candidates.csv"
     with open(candidates_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["ats", "code", "alt_codes", "region", "name", "name_source", "careersite_urls", "sources", "row_count"])
+        writer.writerow(["ats", "code", "alt_codes", "region", "name", "name_source", "careersite_urls", "sources"])
         for cand in candidates:
             writer.writerow([
                 cand.ats,
@@ -98,7 +96,6 @@ def run_build(dirs: dict) -> dict:
                 cand.name_source,
                 "; ".join(cand.careersite_urls),
                 "; ".join(cand.sources),
-                cand.row_count,
             ])
 
     rejects_path = dirs["intermediate"] / "source_rejects.csv"
@@ -152,7 +149,6 @@ def load_candidates(dirs: dict) -> list[Candidate]:
                     name_source=row.get("name_source") or "",
                     careersite_urls=[u for u in (row.get("careersite_urls") or "").split("; ") if u],
                     sources=[s for s in (row.get("sources") or "").split("; ") if s],
-                    row_count=int(row.get("row_count") or 1),
                 )
             )
     return candidates
