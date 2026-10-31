@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 
 # The 7 business-required fields (per the project spec). `country` is additional
@@ -69,6 +69,7 @@ class BoardValidation:
     http_status: int | None = None
     jobs_count: int | None = None
     company_name: str | None = None
+    company_identifier: str | None = None
     description: str | None = None
     website_url: str | None = None
     country: str | None = None
@@ -90,6 +91,7 @@ class BoardValidation:
             "http_status": self.http_status,
             "jobs_count": self.jobs_count,
             "company_name": self.company_name,
+            "company_identifier": self.company_identifier,
             "description": self.description,
             "website_url": self.website_url,
             "country": self.country,
@@ -102,7 +104,8 @@ class BoardValidation:
 
     @classmethod
     def from_dict(cls, d: dict) -> "BoardValidation":
-        return cls(**d)
+        names = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in names})
 
 
 def utc_now() -> str:

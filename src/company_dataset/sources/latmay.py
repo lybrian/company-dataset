@@ -4,7 +4,7 @@ import csv
 from pathlib import Path
 
 from company_dataset.models import Reject, SourceMeta, SourceRecord
-from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, parse_board_url
+from company_dataset.normalize import ASHBY, BREEZY, GREENHOUSE, LEVER, SMARTRECRUITERS, parse_board_url
 
 META = SourceMeta(
     name="latmay",
@@ -17,7 +17,13 @@ META = SourceMeta(
     attribution="Latmay (latmay.com), dataset snapshot August 2026",
 )
 
-PLATFORM_MAP = {"Greenhouse": GREENHOUSE, "Lever": LEVER, "Ashby": ASHBY}
+PLATFORM_MAP = {
+    "Greenhouse": GREENHOUSE,
+    "Lever": LEVER,
+    "Ashby": ASHBY,
+    "Breezy HR": BREEZY,
+    "SmartRecruiters": SMARTRECRUITERS,
+}
 
 
 def parse(path: Path):

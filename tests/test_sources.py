@@ -7,6 +7,8 @@ LATMAY_CSV = "\ufeffcanonical_url,ats_platform\n" + (
     "https://job-boards.greenhouse.io/acme,Greenhouse\n"
     "https://jobs.lever.co/leverco,Lever\n"
     "https://jobs.ashbyhq.com/ashbyco,Ashby\n"
+    "https://10percent.breezy.hr,Breezy HR\n"
+    "https://careers.smartrecruiters.com/AbbVie,SmartRecruiters\n"
     "https://3m.wd1.myworkdayjobs.com/Search,Workday\n"
     "https://jobs.lever.co/,Lever\n"
     "https://job-boards.greenhouse.io/.well-known,Greenhouse\n"
@@ -46,6 +48,8 @@ def test_latmay_parses_and_rejects(tmp_path):
         ("greenhouse", "acme"),
         ("lever", "leverco"),
         ("ashby", "ashbyco"),
+        ("breezy", "10percent"),
+        ("smartrecruiters", "AbbVie"),
         ("lever", "leverco"),
     ]
     assert records[0].source == latmay.META.name
@@ -204,12 +208,20 @@ class TestFeashliaa:
         assert "feashliaa" in feashliaa.META.name
 
 
-def test_openatsfeed_keeps_only_our_three_ats(tmp_path):
+def test_openatsfeed_keeps_only_supported_ats(tmp_path):
     path = tmp_path / "tokens.json"
     path.write_text('{"greenhouse": ["acme", " ", "abridge\\\\"], "ashby": ["Applied Compute"], "workable": ["x"]}')
     records, rejects = openatsfeed.parse(path)
     assert [(r.ats, r.code) for r in records] == [("greenhouse", "acme"), ("greenhouse", "abridge"), ("ashby", "Applied Compute")]
     assert len(rejects) == 1
+
+
+def test_openatsfeed_keeps_breezy_and_smartrecruiters(tmp_path):
+    path = tmp_path / "tokens.json"
+    path.write_text('{"breezy": ["10percent", "www", "api"], "smartrecruiters": ["AbbVie", ""], "workable": ["x"]}')
+    records, rejects = openatsfeed.parse(path)
+    assert [(r.ats, r.code) for r in records] == [("breezy", "10percent"), ("smartrecruiters", "AbbVie")]
+    assert len(rejects) == 3
 
 
 def test_headcountlabs_parse(tmp_path):

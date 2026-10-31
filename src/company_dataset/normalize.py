@@ -7,7 +7,9 @@ from urllib.parse import quote, unquote, urlsplit
 GREENHOUSE = "greenhouse"
 LEVER = "lever"
 ASHBY = "ashby"
-SUPPORTED_ATS = (ASHBY, GREENHOUSE, LEVER)
+SMARTRECRUITERS = "smartrecruiters"
+BREEZY = "breezy"
+SUPPORTED_ATS = (ASHBY, BREEZY, GREENHOUSE, LEVER, SMARTRECRUITERS)
 
 _HOSTS = {
     "job-boards.greenhouse.io": GREENHOUSE,
@@ -19,7 +21,20 @@ _HOSTS = {
     "api.eu.lever.co": LEVER,
     "jobs.ashbyhq.com": ASHBY,
     "api.ashbyhq.com": ASHBY,
+    "careers.smartrecruiters.com": SMARTRECRUITERS,
+    "jobs.smartrecruiters.com": SMARTRECRUITERS,
+    "api.smartrecruiters.com": SMARTRECRUITERS,
 }
+
+BREEZY_HOST_SUFFIX = ".breezy.hr"
+BREEZY_RESERVED_LABELS = frozenset({"api", "app", "developer", "help", "status", "www"})
+
+
+def _breezy_host_code(host: str) -> str | None:
+    labels = host.split(".")
+    if len(labels) == 3 and host.endswith(BREEZY_HOST_SUFFIX):
+        return labels[0]
+    return None
 
 
 @dataclass(frozen=True)
@@ -66,12 +81,16 @@ def parse_board_url(raw) -> ParsedBoard | None:
         text = "https://" + text
     try:
         parts = urlsplit(text)
-        host = (parts.hostname or "").lower()
+        raw_host = (parts.hostname or "").lower()
     except ValueError:
         return None
-    if host.startswith("www."):
-        host = host[4:]
+    host = raw_host[4:] if raw_host.startswith("www.") else raw_host
     ats = _HOSTS.get(host)
+    breezy_code = None
+    if ats is None:
+        breezy_code = _breezy_host_code(raw_host)
+        if breezy_code is not None:
+            ats = BREEZY
     if ats is None:
         return None
     segs = [unquote(seg) for seg in parts.path.split("/") if seg != ""]
@@ -93,12 +112,20 @@ def parse_board_url(raw) -> ParsedBoard | None:
             region = "eu" if host == "jobs.eu.lever.co" else None
             if segs:
                 code = segs[0]
-    else:
+    elif ats == ASHBY:
         if host == "api.ashbyhq.com":
             if len(segs) >= 3 and segs[0] == "posting-api" and segs[1] == "job-board":
                 code = segs[2]
         elif segs:
             code = segs[0]
+    elif ats == SMARTRECRUITERS:
+        if host == "api.smartrecruiters.com":
+            if len(segs) >= 3 and segs[0] == "v1" and segs[1] == "companies":
+                code = segs[2]
+        elif segs:
+            code = segs[0]
+    elif ats == BREEZY:
+        code = breezy_code
     if code is None:
         return None
     code = clean_code(ats, code)
@@ -117,6 +144,8 @@ def clean_code(ats: str, code) -> str | None:
     if not isinstance(code, str):
         return None
     code = code.split("\\", 1)[0].strip().rstrip(";").strip()
+    if ats == BREEZY and code.casefold() in BREEZY_RESERVED_LABELS:
+        return None
     if ats == ASHBY and " " in code:
         if not re.fullmatch(r"[^\s]+( [^\s]+)*", code) or not is_valid_slug(code.replace(" ", "-")):
             return None
@@ -133,6 +162,10 @@ def canonical_board_url(ats: str, code: str, region: str | None = None) -> str:
         return f"https://{host}/{q}"
     if ats == ASHBY:
         return f"https://jobs.ashbyhq.com/{q}"
+    if ats == SMARTRECRUITERS:
+        return f"https://careers.smartrecruiters.com/{q}"
+    if ats == BREEZY:
+        return f"https://{q}.breezy.hr"
     raise ValueError(f"unsupported ats: {ats}")
 
 
@@ -145,6 +178,10 @@ def canonical_api_url(ats: str, code: str, region: str | None = None) -> str:
         return f"https://{host}/v0/postings/{q}?mode=json"
     if ats == ASHBY:
         return f"https://api.ashbyhq.com/posting-api/job-board/{q}"
+    if ats == SMARTRECRUITERS:
+        return f"https://api.smartrecruiters.com/v1/companies/{q}/postings?limit=100"
+    if ats == BREEZY:
+        return f"https://{q}.breezy.hr/json"
     raise ValueError(f"unsupported ats: {ats}")
 
 
