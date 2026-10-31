@@ -1,6 +1,6 @@
 # company-dataset
 
-A list of companies that hire through **Greenhouse, Lever or Ashby**, built from public datasets and the vendors' own public job-board APIs.
+A list of companies that hire through **Greenhouse, Lever, Ashby, SmartRecruiters or Breezy HR**, built from public datasets and the vendors' own public job-board APIs.
 
 As of the last run (October 2026):
 
@@ -36,13 +36,15 @@ Companies that only share a name are left alone, because many different companie
 | File | What it holds |
 |---|---|
 | `data/output/companies_complete.csv` | The list: complete companies, seven columns |
-| `data/output/companies_total.csv` | Every live company, seven columns plus `complete` and `missing_fields` |
+| `data/output/companies_total.csv` | Every live company, seven columns plus `complete`, `missing_fields`, `http_status`, `checked_at`, `jobs_count`, `endpoint`, `verification_tier` |
 | `data/output/companies_incomplete.csv` | Live companies with gaps, plus a `missing_fields` column |
 | `data/output/source_manifest.csv` | Every source, with its license, attribution, download date and checksum |
 | `reports/quality_report.md` | Counts, field coverage, sources, locations and rejections |
-| `data/review/companies_detailed.csv` | Every live company with extra columns: country, open jobs, the company's other boards, and where each value came from |
+| `data/review/companies_detailed.csv` | Every live company with extra columns: country, open jobs, the company's other boards, and where each value came from, plus evidence columns |
 | `data/review/rejected_records.csv` | Everything that was dropped and why |
 | `data/review/possible_duplicates.csv` | Companies that share a name with another row |
+| `data/review/uncertain_companies.csv` | Boards with unresolved validation (total_found_zero, company_identifier_mismatch, etc.) |
+| `data/review/dead_companies.csv` | Boards that are gone (board_not_found, careersite_unavailable) |
 
 `data/output/` and `reports/` are in git. Everything else under `data/` is rebuilt by the pipeline and isn't committed.
 
@@ -90,6 +92,35 @@ Useful options:
 - `--refresh` re-downloads the sources
 - `--max-age-days N` rechecks boards last validated more than N days ago
 - `--workers` and `--per-host-delay` control request concurrency and pacing
+- `--ats ATS1,ATS2` limits validation to specific ATSes (greenhouse, lever, ashby, smartrecruiters, breezy)
+- `--run-dir PATH` writes outputs to a fresh directory (fails if it exists)
+- `--smartrecruiters-max-concurrent N` and `--smartrecruiters-delay-seconds S` override rate limits
+- `--breezy-max-concurrent N` and `--breezy-delay-seconds S` override rate limits
+
+## Verification tiers
+
+Each live board gets a `verification_tier` in the output:
+- **A** — boards with open jobs (no Lever region conflict)
+- **B** — Lever boards with jobs > 0 where the candidate's source region (EU/US) differs from the region that answered (region_answered)
+- **C** — boards with zero jobs but independent association evidence:
+  - Breezy: only when the hosted page confirms the company identity
+  - Greenhouse: only when the board-info name matches the candidate/source name via `names_match`; blank if no candidate name
+  - Lever/Ashby/SmartRecruiters zero-job: no tier
+
+## Evidence columns
+
+`companies_total.csv` and `data/review/companies_detailed.csv` include:
+- `http_status` — the vendor API response code
+- `checked_at` — when the board was last validated
+- `jobs_count` — number of open jobs at validation time
+- `endpoint` — the exact vendor API URL that was queried
+- `verification_tier` — the tier assigned to the board
+
+## Review files
+
+Two new review files help audit the validation:
+- `data/review/uncertain_companies.csv` — boards with unresolved validation (e.g., total_found_zero, company_identifier_mismatch, exists_no_identity, http_404_unrecognized)
+- `data/review/dead_companies.csv` — boards that are gone (board_not_found, careersite_unavailable)
 
 ## Requirements
 

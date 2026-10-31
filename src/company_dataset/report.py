@@ -35,7 +35,20 @@ def _pct(n, d) -> str:
     return f"{100 * n / d:.1f}%" if d else "0.0%"
 
 
+def _check_report_overwrite(dirs: dict) -> list[Path]:
+    """Check if report target file already exists."""
+    report_path = dirs["reports"] / "quality_report.md"
+    existing = [report_path] if report_path.exists() else []
+    return existing
+
+
 def run_report(dirs: dict) -> dict:
+    # No-overwrite check for report
+    existing = _check_report_overwrite(dirs)
+    if existing:
+        paths = ", ".join(str(p) for p in existing)
+        raise FileExistsError(f"Report target file already exists (remove it first): {paths}")
+    
     build = _read_json(dirs["intermediate"] / "build_stats.json", {}) or {}
     validation = _read_json(dirs["intermediate"] / "validation_stats.json", {}) or {}
     ex = _read_json(dirs["intermediate"] / "export_stats.json", {}) or {}
@@ -85,8 +98,15 @@ def run_report(dirs: dict) -> dict:
     L.append("")
 
     L += ["By ATS:", "", "| ATS | Live | Complete |", "|---|---|---|"]
-    for ats in ("greenhouse", "lever", "ashby"):
-        L.append(f"| {ats.title()} | {_n(ex.get('live_by_ats', {}).get(ats, 0))} | {_n(ex.get('complete_by_ats', {}).get(ats, 0))} |")
+    ATS_LABELS = {
+        "greenhouse": "Greenhouse",
+        "lever": "Lever",
+        "ashby": "Ashby",
+        "smartrecruiters": "SmartRecruiters",
+        "breezy": "Breezy HR",
+    }
+    for ats_key, ats_label in ATS_LABELS.items():
+        L.append(f"| {ats_label} | {_n(ex.get('live_by_ats', {}).get(ats_key, 0))} | {_n(ex.get('complete_by_ats', {}).get(ats_key, 0))} |")
     L.append("")
 
     L += [
@@ -180,6 +200,17 @@ def run_report(dirs: dict) -> dict:
         f"{_n(ex.get('shared_descriptions_dropped', 0))} descriptions that were template text shared by three or more companies.",
         "",
     ]
+
+    # Unresolved & Dead Reasons by ATS
+    unresolved_reasons = validation.get("unresolved_reasons", {})
+    if unresolved_reasons:
+        L += ["## Unresolved & Dead Reasons by ATS", "", "| ATS | Reason | Count |", "|---|---|---|"]
+        for ats_key, reasons in unresolved_reasons.items():
+            ats_label = ATS_LABELS.get(ats_key, ats_key.title())
+            for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
+                L.append(f"| {ats_label} | {reason} | {_n(count)} |")
+        L.append("")
+    
     reports_dir = dirs["reports"]
     reports_dir.mkdir(parents=True, exist_ok=True)
     (reports_dir / "quality_report.md").write_text("\n".join(L), encoding="utf-8")

@@ -44,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--smartrecruiters-delay-seconds", type=float, default=None, help="SmartRecruiters per-ATS delay override")
     parser.add_argument("--breezy-max-concurrent", type=int, default=None, help="Breezy per-ATS concurrency override")
     parser.add_argument("--breezy-delay-seconds", type=float, default=None, help="Breezy per-ATS delay override")
+    parser.add_argument("--run-dir", type=str, default=None, help="output directory for this run (must not exist)")
     parser.add_argument("--revalidate", action="store_true", help="ignore cached validation results")
     parser.add_argument("--max-age-days", type=float, default=None, help="recheck cached validation results older than this")
     parser.add_argument("--refresh", action="store_true", help="re-download sources even when a cached copy exists")
@@ -85,7 +86,7 @@ def main(argv=None) -> int:
     if command in ("enrich", "all"):
         run_enrich(dirs, max_workers=args.workers, timeout=args.timeout)
     if command in ("export", "all"):
-        run_export(dirs)
+        run_export(dirs, run_dir=args.run_dir)
     if command in ("report", "all"):
-        run_report(dirs)
+        run_report(dirs, run_dir=args.run_dir)
     return 0

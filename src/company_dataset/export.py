@@ -7,9 +7,19 @@ from pathlib import Path
 
 from company_dataset import reference as reference_mod
 from company_dataset.build import load_candidates
-from company_dataset.enrichment import board_from_validation, is_auxiliary_board, is_test_board, name_key
+from company_dataset.enrichment import (
+    ASHBY,
+    GREENHOUSE,
+    LEVER,
+    board_from_validation,
+    is_auxiliary_board,
+    is_test_board,
+    name_key,
+    names_match,
+)
+from company_dataset.normalize import BREEZY, SMARTRECRUITERS
 from company_dataset.models import REQUIRED_FIELDS, utc_now
-from company_dataset.normalize import host_of
+from company_dataset.normalize import canonical_api_url, host_of
 from company_dataset.resolve import resolve_board, slug_matches
 
 COMPANY_COLUMNS = [
@@ -31,6 +41,11 @@ COMPANY_COLUMNS = [
     "country_source",
     "validated_at",
     "sources",
+    # Evidence columns (Stage C)
+    "http_status",
+    "checked_at",
+    "endpoint",
+    "verification_tier",
 ]
 
 REJECT_COLUMNS = [
@@ -47,6 +62,73 @@ REJECT_COLUMNS = [
 
 # The same description on this many unrelated companies is template text, not theirs.
 SHARED_DESCRIPTION_LIMIT = 3
+
+
+def _validation_endpoint(ats: str, code: str, outcome: dict) -> str:
+    """Return the actual URL that was validated, using the code that validated.
+    
+    For SmartRecruiters: use the original token case in the API URL.
+    For Lever: use the EU host if the EU host answered.
+    For others: use the standard canonical API URL with the validated code.
+    """
+    validated_code = outcome.get("code_validated") or code
+    if ats == SMARTRECRUITERS:
+        return canonical_api_url(SMARTRECRUITERS, validated_code)
+    if ats == LEVER:
+        region = outcome.get("region_answered")
+        return canonical_api_url(LEVER, validated_code, region)
+    return canonical_api_url(ats, validated_code)
+
+
+def _verification_tier(ats: str, outcome: dict, board, res, cand: Candidate | None = None) -> str:
+    """Determine verification tier per Stage C rules.
+    
+    A = jobs > 0 with no Lever region conflict
+    B = Lever with jobs > 0 where candidate region differs from region_answered
+    C = zero jobs with independent association evidence:
+        - Breezy: only when hosted page confirmed identity (res.name non-generic)
+        - Greenhouse: only if names_match(outcome company_name, candidate/source name) is true; if no candidate name, blank
+        - Lever/Ashby/SmartRecruiters zero-job: blank
+    No tier for unresolved or invalid records.
+    """
+    jobs_count = outcome.get("jobs_count") or 0
+    status = outcome.get("status")
+    
+    if status != "valid":
+        return ""
+    
+    if jobs_count > 0:
+        # Tier B: Lever with region mismatch (candidate region != region_answered)
+        if ats == LEVER:
+            cand_region = (cand.region or "us").lower() if cand else "us"
+            # region_answered: "eu" for EU, None for US (default to "us")
+            region_answered = (outcome.get("region_answered") or "us").lower()
+            if cand_region != region_answered:
+                return "B"
+        # Tier A: jobs > 0 with no Lever region conflict
+        return "A"
+    
+    # jobs_count == 0: Tier C with conditions
+    if ats == BREEZY:
+        # Breezy C only when hosted page confirmed identity (res.name non-generic)
+        if res.name and res.name.casefold() not in {"breezy", "breezy hr", "breezyhr"}:
+            return "C"
+        return ""
+    
+    if ats == GREENHOUSE:
+        # Greenhouse C only if names_match(outcome company_name, candidate/source name) is true
+        # If no candidate name, blank
+        if cand and cand.name:
+            outcome_name = outcome.get("company_name") or ""
+            if outcome_name and names_match(outcome_name, cand.name):
+                return "C"
+        return ""
+    
+    # Lever/Ashby/SmartRecruiters zero-job: blank
+    if ats in (LEVER, ASHBY, SMARTRECRUITERS):
+        return ""
+    
+    return ""
 
 
 def _read_json(path: Path, default=None):
@@ -124,6 +206,147 @@ def _jobs(row: dict) -> int:
     return int(row["jobs_count"]) if str(row["jobs_count"]).isdigit() else -1
 
 
+UNCERTAIN_REASONS = {
+    "total_found_zero",
+    "company_identifier_mismatch",
+    "exists_no_identity",
+    "http_404_unrecognized",
+    "unexpected_schema",
+    "invalid_json",
+    "hosted_page_http_404",
+    "hosted_page_request_error",
+    "request_error",
+    "http_",
+    "validation_unresolved",
+    "not_validated",
+}
+
+DEAD_REASONS = {
+    "board_not_found",
+    "careersite_unavailable",
+    "validation_failed",
+}
+
+
+def _write_uncertain_and_dead_companies(review: Path, candidates: list, cache: dict, validation_rejects: list[list]):
+    """Write uncertain_companies.csv and dead_companies.csv with reason column."""
+    uncertain_rows = []
+    dead_rows = []
+    
+    # Track which candidates were rejected as careersite_unavailable (valid boards with dead hosted pages)
+    careersite_unavailable_keys = set()
+    for rej in validation_rejects:
+        if len(rej) >= 2 and rej[1] == "careersite_unavailable":
+            ats, code = rej[4], rej[5]
+            careersite_unavailable_keys.add(f"{ats}:{code.casefold()}")
+    
+    for cand in candidates:
+        outcome = cache.get(cand.key)
+        if outcome is None:
+            # Not validated - goes to uncertain
+            uncertain_rows.append({
+                "source": "; ".join(cand.sources),
+                "reason": "not_validated",
+                "detail": "no validation result; run validate stage",
+                "ats_system": cand.ats,
+                "ats_code": cand.code,
+                "name": cand.name or "",
+                "careersite_url": "; ".join(cand.careersite_urls),
+                "http_status": "",
+                "checked_at": "",
+                "endpoint": "",
+                "error": "not_validated",
+            })
+            continue
+        
+        status = outcome.get("status")
+        error = outcome.get("error") or ""
+        http_status = outcome.get("http_status") or ""
+        checked_at = outcome.get("checked_at") or ""
+        
+        if status == "valid":
+            # Check if this valid board was rejected as careersite_unavailable
+            if cand.key in careersite_unavailable_keys:
+                dead_rows.append({
+                    "source": "; ".join(cand.sources),
+                    "reason": "careersite_unavailable",
+                    "detail": "vendor API answers but the hosted board page is gone",
+                    "ats_system": cand.ats,
+                    "ats_code": cand.code,
+                    "name": cand.name or "",
+                    "careersite_url": "; ".join(cand.careersite_urls),
+                    "http_status": str(outcome.get("http_status") or ""),
+                    "checked_at": outcome.get("checked_at") or "",
+                    "endpoint": _validation_endpoint(cand.ats, cand.code, outcome),
+                    "error": "careersite_unavailable",
+                })
+            continue
+        
+        row = {
+            "source": "; ".join(cand.sources),
+            "reason": error if error else status,
+            "detail": f'http={outcome.get("http_status")} error={error or ""}',
+            "ats_system": cand.ats,
+            "ats_code": cand.code,
+            "name": cand.name or "",
+            "careersite_url": "; ".join(cand.careersite_urls),
+            "http_status": str(http_status) if http_status else "",
+            "checked_at": outcome.get("checked_at") or "",
+            "endpoint": _validation_endpoint(cand.ats, cand.code, outcome),
+            "error": error if error else status,
+        }
+        
+        # Classify as uncertain or dead based on reason
+        is_dead = False
+        for dead_reason in DEAD_REASONS:
+            if dead_reason in row["reason"]:
+                is_dead = True
+                break
+        
+        # Also check for specific error patterns
+        if status == "invalid" and outcome.get("http_status") == 404:
+            is_dead = True
+        if "careersite_unavailable" in row["reason"]:
+            is_dead = True
+        
+        if is_dead:
+            dead_rows.append(row)
+        else:
+            # Check if it's an uncertain reason
+            is_uncertain = False
+            for unc_reason in UNCERTAIN_REASONS:
+                if unc_reason in row["reason"]:
+                    is_uncertain = True
+                    break
+            if is_uncertain or status == "unresolved" or status == "not_validated":
+                uncertain_rows.append(row)
+            else:
+                # Default to uncertain for any other non-valid status
+                uncertain_rows.append(row)
+    
+    # Write uncertain_companies.csv
+    if uncertain_rows:
+        review.mkdir(parents=True, exist_ok=True)
+        uncertain_cols = ["source", "reason", "detail", "ats_system", "ats_code", "name", "careersite_url", "http_status", "checked_at", "endpoint", "error"]
+        with open(review / "uncertain_companies.csv", "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=uncertain_cols)
+            writer.writeheader()
+            writer.writerows(uncertain_rows)
+    
+    # Write dead_companies.csv
+    if dead_rows:
+        review.mkdir(parents=True, exist_ok=True)
+        dead_cols = ["source", "reason", "detail", "ats_system", "ats_code", "name", "careersite_url", "http_status", "checked_at", "endpoint", "error"]
+        with open(review / "dead_companies.csv", "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=dead_cols)
+            writer.writeheader()
+            writer.writerows(dead_rows)
+
+
+def _jobs(row: dict) -> int:
+    return int(row["jobs_count"]) if str(row["jobs_count"]).isdigit() else -1
+
+
 def collapse_companies(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     """One row per company, across all three ATSes.
 
@@ -193,7 +416,69 @@ def write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def run_export(dirs: dict, ref=None) -> dict:
+def _check_overwrite(dirs: dict, run_dir: str | None = None) -> list[Path]:
+    """Check if any target files already exist. Returns list of existing files.
+    
+    In default mode (no --run-dir): checks output/, review/, reports/ under dirs.
+    With --run-dir: checks the run_dir/output, run_dir/review, run_dir/reports.
+    """
+    if run_dir is not None:
+        run_path = Path(run_dir)
+        targets = [
+            run_path / "output" / "companies_complete.csv",
+            run_path / "output" / "companies_incomplete.csv",
+            run_path / "output" / "companies_total.csv",
+            run_path / "output" / "source_manifest.csv",
+            run_path / "review" / "companies_detailed.csv",
+            run_path / "review" / "rejected_records.csv",
+            run_path / "review" / "uncertain_companies.csv",
+            run_path / "review" / "dead_companies.csv",
+            run_path / "review" / "possible_duplicates.csv",
+            run_path / "reports" / "quality_report.md",
+        ]
+    else:
+        output = dirs["output"]
+        review = Path(dirs.get("review") or Path(dirs["data"]) / "review")
+        reports = dirs["reports"]
+        targets = [
+            output / "companies_complete.csv",
+            output / "companies_incomplete.csv",
+            output / "companies_total.csv",
+            output / "source_manifest.csv",
+            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "companies_detailed.csv",
+            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "rejected_records.csv",
+            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "uncertain_companies.csv",
+            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "dead_companies.csv",
+            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "possible_duplicates.csv",
+            dirs["reports"] / "quality_report.md",
+        ]
+    
+    existing = [p for p in targets if p.exists()]
+    return existing
+
+
+def run_export(dirs: dict, ref=None, run_dir: str | None = None) -> dict:
+    # No-overwrite check for both default mode and --run-dir
+    existing = _check_overwrite(dirs, run_dir)
+    if existing:
+        paths = ", ".join(str(p) for p in existing)
+        raise FileExistsError(f"Target files already exist (use --run-dir or remove them): {paths}")
+    
+    # No-overwrite check for --run-dir (directory itself)
+    if run_dir is not None:
+        run_path = Path(run_dir)
+        if run_path.exists():
+            raise FileExistsError(f"Run directory already exists: {run_dir}")
+        # Create the directory structure
+        run_path.mkdir(parents=True, exist_ok=True)
+        # Override the output and review directories to use run_dir
+        dirs = dict(dirs)
+        dirs["output"] = run_path / "output"
+        dirs["review"] = run_path / "review"
+        dirs["reports"] = run_path / "reports"
+        for d in (dirs["output"], dirs["review"], dirs["reports"]):
+            d.mkdir(parents=True, exist_ok=True)
+    
     candidates = load_candidates(dirs)
     cache = _read_json(dirs["cache"] / "validation.json", {}) or {}
     pages = _read_json(dirs["cache"] / "pages.json", {}) or {}
@@ -227,6 +512,12 @@ def run_export(dirs: dict, ref=None) -> dict:
         if res.careersite_status == "dead":
             validation_rejects.append([sources, "careersite_unavailable", "vendor API answers but the hosted board page is gone", "", ats, board.code, res.name, board.careersite_url, ""])
             continue
+        # Evidence columns
+        http_status = outcome.get("http_status")
+        checked_at = outcome.get("checked_at") or ""
+        endpoint = _validation_endpoint(ats, code, outcome)
+        verification_tier = _verification_tier(ats, outcome, board, res, cand)
+
         live.append({
             "name": res.name,
             "description": res.description,
@@ -240,8 +531,13 @@ def run_export(dirs: dict, ref=None) -> dict:
             "also_on_ats": "",
             "other_boards": "",
             **res.sources,
-            "validated_at": outcome.get("checked_at") or "",
+            "validated_at": checked_at,
             "sources": sources,
+            # Evidence columns
+            "http_status": http_status if http_status is not None else "",
+            "checked_at": checked_at,
+            "endpoint": endpoint,
+            "verification_tier": verification_tier,
         })
 
     linkedin_conflicts = drop_conflicting_linkedin(live)
@@ -261,17 +557,26 @@ def run_export(dirs: dict, ref=None) -> dict:
     # complete + incomplete line up with total.
     write_csv(dirs["output"] / "companies_complete.csv", list(REQUIRED_FIELDS), complete)
     write_csv(dirs["output"] / "companies_incomplete.csv", list(REQUIRED_FIELDS) + ["missing_fields"], incomplete)
-    write_csv(dirs["output"] / "companies_total.csv", list(REQUIRED_FIELDS) + ["complete", "missing_fields"], complete + incomplete)
+    
+    # companies_total.csv and companies_detailed.csv include evidence columns
+    EVIDENCE_COLUMNS = ["http_status", "checked_at", "jobs_count", "endpoint", "verification_tier"]
+    TOTAL_COLUMNS = list(REQUIRED_FIELDS) + ["complete", "missing_fields"] + EVIDENCE_COLUMNS
+    DETAILED_COLUMNS_WITH_EVIDENCE = DETAILED_COLUMNS + EVIDENCE_COLUMNS
+    
+    write_csv(dirs["output"] / "companies_total.csv", TOTAL_COLUMNS, complete + incomplete)
 
     # Review files: provenance, rejects and possible duplicates, for checking the work.
     review = Path(dirs.get("review") or Path(dirs["data"]) / "review")
-    write_csv(review / "companies_detailed.csv", DETAILED_COLUMNS, complete + incomplete)
+    write_csv(review / "companies_detailed.csv", DETAILED_COLUMNS_WITH_EVIDENCE, complete + incomplete)
     rejects = _load_source_rejects(dirs) + validation_rejects
     review.mkdir(parents=True, exist_ok=True)
     with open(review / "rejected_records.csv", "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(REJECT_COLUMNS)
         writer.writerows(rejects)
+
+    # Write uncertain_companies.csv and dead_companies.csv
+    _write_uncertain_and_dead_companies(review, candidates, cache, validation_rejects)
 
     per_source = build_stats.get("per_source", {})
     contributed = Counter(s for cand in candidates for s in cand.sources)
