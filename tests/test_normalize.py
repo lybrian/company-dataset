@@ -145,7 +145,7 @@ def test_supported_ats_includes_new_boards():
 def test_non_ats_urls_return_none():
     assert parse_board_url("https://example.com/careers") is None
     assert parse_board_url("https://www.greenhouse.io/") is None
-    assert parse_board_url("https://apply.workable.com/huggingface") is None
+    assert parse_board_url("https://jobs.jobvite.com/huggingface") is None
     assert parse_board_url("https://jobs.eu.lever.co") is None
 
 
@@ -221,3 +221,12 @@ def test_canonical_api_urls():
 def test_canonical_quotes_special_codes():
     assert canonical_board_url(LEVER, "11:11Media") == "https://jobs.lever.co/11%3A11Media"
     assert canonical_api_url(ASHBY, "$10.2K") == "https://api.ashbyhq.com/posting-api/job-board/%2410.2K"
+
+
+def test_greenhouse_eu_hosts_parse_with_region():
+    pb = parse_board_url("https://job-boards.eu.greenhouse.io/jdsports/jobs/5012680101")
+    assert (pb.ats, pb.code, pb.region) == ("greenhouse", "jdsports", "eu")
+    from company_dataset.normalize import canonical_api_url, canonical_board_url
+    assert canonical_board_url("greenhouse", "jdsports", "eu") == "https://job-boards.eu.greenhouse.io/jdsports"
+    # One API serves both instances.
+    assert canonical_api_url("greenhouse", "jdsports", "eu") == "https://boards-api.greenhouse.io/v1/boards/jdsports/jobs"

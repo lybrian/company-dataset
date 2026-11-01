@@ -18,6 +18,7 @@ from company_dataset.enrichment import (
     names_match,
 )
 from company_dataset.normalize import BREEZY, SMARTRECRUITERS
+from company_dataset.platforms import EXTRA_ATS
 from company_dataset.models import REQUIRED_FIELDS, utc_now
 from company_dataset.normalize import canonical_api_url, host_of
 from company_dataset.resolve import resolve_board, slug_matches
@@ -86,7 +87,7 @@ def _verification_tier(ats: str, outcome: dict, board, res, cand: Candidate | No
     A = jobs > 0 with no Lever region conflict
     B = Lever with jobs > 0 where candidate region differs from region_answered
     C = zero jobs with independent association evidence:
-        - Breezy: only when hosted page confirmed identity (res.name non-generic)
+        - Breezy: always (validation required hosted-page identity for empty boards)
         - Greenhouse: only if names_match(outcome company_name, candidate/source name) is true; if no candidate name, blank
         - Lever/Ashby/SmartRecruiters zero-job: blank
     No tier for unresolved or invalid records.
@@ -110,10 +111,9 @@ def _verification_tier(ats: str, outcome: dict, board, res, cand: Candidate | No
     
     # jobs_count == 0: Tier C with conditions
     if ats == BREEZY:
-        # Breezy C only when hosted page confirmed identity (res.name non-generic)
-        if res.name and res.name.casefold() not in {"breezy", "breezy hr", "breezyhr"}:
-            return "C"
-        return ""
+        # The validator only marks an empty Breezy /json valid after the hosted page
+        # names the company, so every valid zero-job Breezy board already has that evidence.
+        return "C"
     
     if ats == GREENHOUSE:
         # Greenhouse C only if names_match(outcome company_name, candidate/source name) is true
@@ -126,6 +126,13 @@ def _verification_tier(ats: str, outcome: dict, board, res, cand: Candidate | No
     
     # Lever/Ashby/SmartRecruiters zero-job: blank
     if ats in (LEVER, ASHBY, SMARTRECRUITERS):
+        return ""
+
+    # Added platforms: C only when the board's own API/page names a company that matches the source name.
+    if ats in EXTRA_ATS:
+        outcome_name = outcome.get("company_name") or ""
+        if cand and cand.name and outcome_name and names_match(outcome_name, cand.name):
+            return "C"
         return ""
     
     return ""
@@ -228,18 +235,20 @@ DEAD_REASONS = {
 }
 
 
-def _write_uncertain_and_dead_companies(review: Path, candidates: list, cache: dict, validation_rejects: list[list]):
-    """Write uncertain_companies.csv and dead_companies.csv with reason column."""
+def _write_uncertain_and_dead_companies(review: Path, candidates: list, cache: dict, careersite_unavailable_keys: set[str], no_identity_keys: set[str] = frozenset()):
+    """Write uncertain_companies.csv and dead_companies.csv with reason column.
+    
+    Only validation outcomes go here:
+    - uncertain: not_validated, validation_unresolved (total_found_zero, etc.)
+    - dead: board_not_found (validation_failed), careersite_unavailable (valid boards with dead hosted pages)
+    
+    Export-time rejections (test_or_demo_board, auxiliary_board, duplicate_company_board, 
+    source_marked_dead, unparseable_url, unsupported_ats) are only in rejected_records.csv.
+    """
     uncertain_rows = []
     dead_rows = []
-    
-    # Track which candidates were rejected as careersite_unavailable (valid boards with dead hosted pages)
-    careersite_unavailable_keys = set()
-    for rej in validation_rejects:
-        if len(rej) >= 2 and rej[1] == "careersite_unavailable":
-            ats, code = rej[4], rej[5]
-            careersite_unavailable_keys.add(f"{ats}:{code.casefold()}")
-    
+
+    # Process all candidates for validation outcomes only
     for cand in candidates:
         outcome = cache.get(cand.key)
         if outcome is None:
@@ -258,12 +267,27 @@ def _write_uncertain_and_dead_companies(review: Path, candidates: list, cache: d
                 "error": "not_validated",
             })
             continue
-        
+
         status = outcome.get("status")
         error = outcome.get("error") or ""
         http_status = outcome.get("http_status") or ""
         checked_at = outcome.get("checked_at") or ""
-        
+
+        if status == "valid" and cand.key in no_identity_keys:
+            uncertain_rows.append({
+                "source": "; ".join(cand.sources),
+                "reason": "identity_not_established",
+                "detail": "board is live but no source or vendor names the company",
+                "ats_system": cand.ats,
+                "ats_code": cand.code,
+                "name": "",
+                "careersite_url": "; ".join(cand.careersite_urls),
+                "http_status": str(outcome.get("http_status") or ""),
+                "checked_at": outcome.get("checked_at") or "",
+                "endpoint": _validation_endpoint(cand.ats, cand.code, outcome),
+                "error": "identity_not_established",
+            })
+            continue
         if status == "valid":
             # Check if this valid board was rejected as careersite_unavailable
             if cand.key in careersite_unavailable_keys:
@@ -281,7 +305,7 @@ def _write_uncertain_and_dead_companies(review: Path, candidates: list, cache: d
                     "error": "careersite_unavailable",
                 })
             continue
-        
+
         row = {
             "source": "; ".join(cand.sources),
             "reason": error if error else status,
@@ -295,35 +319,17 @@ def _write_uncertain_and_dead_companies(review: Path, candidates: list, cache: d
             "endpoint": _validation_endpoint(cand.ats, cand.code, outcome),
             "error": error if error else status,
         }
-        
-        # Classify as uncertain or dead based on reason
-        is_dead = False
-        for dead_reason in DEAD_REASONS:
-            if dead_reason in row["reason"]:
-                is_dead = True
-                break
-        
-        # Also check for specific error patterns
-        if status == "invalid" and outcome.get("http_status") == 404:
-            is_dead = True
-        if "careersite_unavailable" in row["reason"]:
-            is_dead = True
-        
-        if is_dead:
+
+        # Classify based on EXACT reason matching
+        reason = row["reason"]
+        if reason in DEAD_REASONS:
             dead_rows.append(row)
+        elif reason in UNCERTAIN_REASONS or status == "unresolved" or status == "not_validated":
+            uncertain_rows.append(row)
         else:
-            # Check if it's an uncertain reason
-            is_uncertain = False
-            for unc_reason in UNCERTAIN_REASONS:
-                if unc_reason in row["reason"]:
-                    is_uncertain = True
-                    break
-            if is_uncertain or status == "unresolved" or status == "not_validated":
-                uncertain_rows.append(row)
-            else:
-                # Default to uncertain for any other non-valid status
-                uncertain_rows.append(row)
-    
+            # Default to uncertain for any other non-valid status
+            uncertain_rows.append(row)
+
     # Write uncertain_companies.csv
     if uncertain_rows:
         review.mkdir(parents=True, exist_ok=True)
@@ -332,7 +338,7 @@ def _write_uncertain_and_dead_companies(review: Path, candidates: list, cache: d
             writer = csv.DictWriter(fh, fieldnames=uncertain_cols)
             writer.writeheader()
             writer.writerows(uncertain_rows)
-    
+
     # Write dead_companies.csv
     if dead_rows:
         review.mkdir(parents=True, exist_ok=True)
@@ -348,46 +354,18 @@ def _jobs(row: dict) -> int:
 
 
 def collapse_companies(rows: list[dict]) -> tuple[list[dict], list[dict]]:
-    """One row per company, across all three ATSes.
+    """One row per company, across all ATSes.
 
-    Boards are the same company when they share a website, or share a LinkedIn page
-    and also have matching names (a parent's LinkedIn on a subsidiary's site alone is
-    not enough). The most complete board is kept, then the one with the most jobs; the
-    rest are listed in `other_boards` and returned as extras.
+    Boards are the same company only when they share a strong key (registrable website
+    domain, LinkedIn page) AND their names match. A shared name alone never merges boards,
+    and neither does a shared domain under different names (affiliates, franchise sites, or
+    one wrong website). The most complete board is kept, then the one with the most jobs;
+    the rest are listed in `other_boards` and returned as extras.
     """
-    from company_dataset.enrichment import names_match
+    from company_dataset.identity import cluster_companies
 
-    parent = list(range(len(rows)))
-
-    def find(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    def union(i, j):
-        parent[find(i)] = find(j)
-
-    by_host: dict[str, int] = {}
-    by_li: dict[str, list[int]] = defaultdict(list)
-    for i, row in enumerate(rows):
-        host = host_of(row["website_url"])
-        if host:
-            if host in by_host:
-                union(i, by_host[host])
-            else:
-                by_host[host] = i
-        if row["linkedin_url"]:
-            by_li[row["linkedin_url"].lower()].append(i)
-    for members in by_li.values():
-        for a in members:
-            for b in members:
-                if a < b and names_match(rows[a]["name"], rows[b]["name"]):
-                    union(a, b)
-
-    groups: dict[int, list[dict]] = defaultdict(list)
-    for i, row in enumerate(rows):
-        groups[find(i)].append(row)
+    clusters = cluster_companies([{**r, "website_verified": bool(r["website_url"])} for r in rows])
+    groups: dict[int, list[dict]] = {g[0]: [rows[i] for i in g] for g in clusters}
     keep: list[dict] = []
     extras: list[dict] = []
     for group in groups.values():
@@ -488,6 +466,8 @@ def run_export(dirs: dict, ref=None, run_dir: str | None = None) -> dict:
 
     live: list[dict] = []
     validation_rejects: list[list] = []
+    careersite_unavailable_keys: set[str] = set()
+    no_identity_keys: set[str] = set()
     for cand in candidates:
         ats, code = cand.ats, cand.code
         sources = "; ".join(cand.sources)
@@ -510,13 +490,24 @@ def run_export(dirs: dict, ref=None, run_dir: str | None = None) -> dict:
             validation_rejects.append([sources, "auxiliary_board", "internal / referral / talent-pool board, not the company's main board", "", ats, board.code, res.name or outcome.get("company_name") or "", board.careersite_url, ""])
             continue
         if res.careersite_status == "dead":
+            careersite_unavailable_keys.add(cand.key)
             validation_rejects.append([sources, "careersite_unavailable", "vendor API answers but the hosted board page is gone", "", ats, board.code, res.name, board.careersite_url, ""])
+            continue
+        if not res.name:
+            # A live board alone doesn't say whose it is; without a name it isn't a verified company.
+            no_identity_keys.add(cand.key)
+            validation_rejects.append([sources, "identity_not_established", "board is live but no source or vendor names the company", "", ats, board.code, "", board.careersite_url, ""])
             continue
         # Evidence columns
         http_status = outcome.get("http_status")
         checked_at = outcome.get("checked_at") or ""
         endpoint = _validation_endpoint(ats, code, outcome)
         verification_tier = _verification_tier(ats, outcome, board, res, cand)
+        if not verification_tier:
+            # Live but empty, and nothing beyond a list name says whose board it is.
+            no_identity_keys.add(cand.key)
+            validation_rejects.append([sources, "identity_not_established", "live board with zero jobs and no independent identity evidence", "", ats, board.code, res.name, board.careersite_url, ""])
+            continue
 
         live.append({
             "name": res.name,
@@ -576,7 +567,7 @@ def run_export(dirs: dict, ref=None, run_dir: str | None = None) -> dict:
         writer.writerows(rejects)
 
     # Write uncertain_companies.csv and dead_companies.csv
-    _write_uncertain_and_dead_companies(review, candidates, cache, validation_rejects)
+    _write_uncertain_and_dead_companies(review, candidates, cache, careersite_unavailable_keys, no_identity_keys)
 
     per_source = build_stats.get("per_source", {})
     contributed = Counter(s for cand in candidates for s in cand.sources)
@@ -657,7 +648,9 @@ def run_export(dirs: dict, ref=None, run_dir: str | None = None) -> dict:
         "source_overlap": source_overlap,
         "rejected_rows_total": len(rejects),
     }
-    (dirs["intermediate"] / "export_stats.json").write_text(json.dumps(export_stats, indent=2))
+    # A run dir keeps its own stats so a new run never rewrites data/intermediate.
+    stats_dir = Path(run_dir) if run_dir is not None else dirs["intermediate"]
+    (stats_dir / "export_stats.json").write_text(json.dumps(export_stats, indent=2))
     print(
         f"[export] live boards={len(live)} companies={len(kept)} complete={len(complete)} "
         f"incomplete={len(incomplete)} rejects={dict(reject_reasons)}"

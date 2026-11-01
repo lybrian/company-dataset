@@ -246,9 +246,10 @@ def test_verification_tier_rules(tmp_path):
     
     # Tier C: zero jobs with independent evidence
     # Breezy C only when hosted page confirmed identity
+    # Breezy: a valid empty board already passed hosted-page identity in validation
     assert _verification_tier("breezy", {"status": "valid", "jobs_count": 0}, board_br, res_with_name, cand_with_name) == "C"
-    assert _verification_tier("breezy", {"status": "valid", "jobs_count": 0}, board_br, res_empty, cand_with_name) == ""
-    assert _verification_tier("breezy", {"status": "valid", "jobs_count": 0}, board_br, MockRes(name="Breezy HR"), cand_with_name) == ""
+    assert _verification_tier("breezy", {"status": "valid", "jobs_count": 0}, board_br, res_empty, cand_with_name) == "C"
+    assert _verification_tier("breezy", {"status": "valid", "jobs_count": 0}, board_br, MockRes(name="Breezy HR"), None) == "C"
     
     # Greenhouse C only if names_match(outcome company_name, candidate name) is true
     # If no candidate name, blank
@@ -333,29 +334,6 @@ def test_uncertain_and_dead_companies_csv_generated(tmp_path):
     for row in dead:
         if row["ats_code"] == "invalidco":
             assert row["reason"] in ("board_not_found", "validation_failed")
-
-
-def test_run_dir_no_overwrite_check(tmp_path):
-    """Test that --run-dir fails if the directory already exists."""
-    from company_dataset.export import run_export
-    
-    # First run should succeed
-    dirs1 = _dirs(tmp_path)
-    _write_candidates(dirs1, [["greenhouse", "acme", "", "", "Acme", "latmay", "", "latmay"]])
-    cache = {"greenhouse:acme": _valid("greenhouse", "acme", company_name="Acme", jobs_count=5)}
-    (dirs1["cache"] / "validation.json").write_text(json.dumps(cache))
-    (dirs1["cache"] / "pages.json").write_text(json.dumps({
-        "https://job-boards.greenhouse.io/acme": {"status": "ok", "final_url": "https://acme.com/", "site_name": "Acme", "title": "Acme", "description": "Acme makes things.", "linkedin_slugs": ["acme"], "board_refs": []},
-    }))
-    
-    run_dir = tmp_path / "run1"
-    stats = run_export(dirs1, ref=Reference(), run_dir=str(run_dir))
-    assert stats["live_companies_after_collapse"] == 1
-    
-    # Second run with same run_dir should fail (no-overwrite)
-    import pytest
-    with pytest.raises(FileExistsError):
-        run_export(dirs1, ref=Reference(), run_dir=str(run_dir))
 
 
 def test_run_dir_no_overwrite_check(tmp_path):
@@ -481,3 +459,212 @@ def test_old_cache_compatibility_exports_with_new_evidence_columns(tmp_path):
     detailed = _read(dirs["review"] / "companies_detailed.csv")
     for col in ["http_status", "checked_at", "jobs_count", "endpoint", "verification_tier"]:
         assert col in detailed[0], f"Missing {col} in detailed.csv"
+
+
+def test_dead_and_uncertain_routing_uses_exact_reasons(tmp_path):
+    """Substring matches must not route a reason: hosted_page_http_404 and http_404_unrecognized
+    contain "404" but are unresolved, so they stay uncertain; only board_not_found is dead."""
+    dirs = _dirs(tmp_path)
+    _write_candidates(dirs, [
+        ["greenhouse", "goneco", "", "", "", "", "", "latmay"],
+        ["breezy", "hostedgone", "", "", "", "", "", "latmay"],
+        ["breezy", "oddfour", "", "", "", "", "", "latmay"],
+        ["lever", "throttled", "", "", "", "", "", "latmay"],
+        ["ashby", "timeout", "", "", "", "", "", "latmay"],
+        ["smartrecruiters", "ZeroCo", "", "", "", "", "", "latmay"],
+    ])
+    cache = {
+        "greenhouse:goneco": _valid("greenhouse", "goneco", status="invalid", http_status=404, error="board_not_found"),
+        "breezy:hostedgone": _valid("breezy", "hostedgone", status="unresolved", jobs_count=0, error="hosted_page_http_404"),
+        "breezy:oddfour": _valid("breezy", "oddfour", status="unresolved", http_status=404, error="http_404_unrecognized"),
+        "lever:throttled": _valid("lever", "throttled", status="unresolved", http_status=429, error="http_429"),
+        "ashby:timeout": _valid("ashby", "timeout", status="unresolved", http_status=None, error="request_error: timed out"),
+        "smartrecruiters:zeroco": _valid("smartrecruiters", "ZeroCo", status="unresolved", jobs_count=0, error="total_found_zero"),
+    }
+    (dirs["cache"] / "validation.json").write_text(json.dumps(cache))
+    (dirs["cache"] / "pages.json").write_text(json.dumps({}))
+
+    run_export(dirs, ref=Reference())
+
+    dead = {r["ats_code"]: r["reason"] for r in _read(dirs["review"] / "dead_companies.csv")}
+    uncertain = {r["ats_code"]: r["reason"] for r in _read(dirs["review"] / "uncertain_companies.csv")}
+    assert dead == {"goneco": "board_not_found"}
+    assert uncertain == {
+        "hostedgone": "hosted_page_http_404",
+        "oddfour": "http_404_unrecognized",
+        "throttled": "http_429",
+        "timeout": "request_error: timed out",
+        "ZeroCo": "total_found_zero",
+    }
+
+
+def test_careersite_unavailable_valid_board_listed_in_dead_companies(tmp_path):
+    dirs = _dirs(tmp_path)
+    _write_candidates(dirs, [
+        ["lever", "siepe", "", "", "", "", "", "latmay"],
+        ["greenhouse", "acme", "", "", "Acme", "latmay", "", "latmay"],
+    ])
+    cache = {
+        "lever:siepe": _valid("lever", "siepe", jobs_count=0),
+        "greenhouse:acme": _valid("greenhouse", "acme", company_name="Acme"),
+    }
+    (dirs["cache"] / "validation.json").write_text(json.dumps(cache))
+    (dirs["cache"] / "pages.json").write_text(json.dumps({"https://jobs.lever.co/siepe": {"status": "http_404"}}))
+
+    run_export(dirs, ref=Reference())
+
+    dead = _read(dirs["review"] / "dead_companies.csv")
+    assert [(r["ats_system"], r["ats_code"], r["reason"], r["http_status"]) for r in dead] == [
+        ("lever", "siepe", "careersite_unavailable", "200"),
+    ]
+    assert dead[0]["endpoint"] == "https://api.lever.co/v0/postings/siepe?mode=json"
+    assert [r["ats_code"] for r in _read(dirs["output"] / "companies_total.csv")] == ["acme"]
+
+
+def test_validate_sample_is_per_ats_and_deterministic_with_seed(tmp_path):
+    from conftest import FakeSession
+
+    from company_dataset.config import resolve_dirs
+    from company_dataset.http import HttpClient
+    from company_dataset.validate import AtsRateLimiter, run_validate
+
+    def run(seed, sub):
+        dirs = resolve_dirs(tmp_path / sub)
+        lines = ["ats,code,alt_codes,region,name,name_source,careersite_urls,sources"]
+        lines += [f"greenhouse,gh{i},,,,,,test" for i in range(20)]
+        lines += [f"ashby,ab{i},,,,,,test" for i in range(20)]
+        (dirs["intermediate"] / "candidates.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        session = FakeSession({})
+        client = HttpClient(session=session, sleep=lambda s: None, per_host_interval=0.0, max_attempts=1)
+        stats = run_validate(dirs, client=client, sample=3, seed=seed, rate_limiter=AtsRateLimiter({}), max_workers=1)
+        cache = json.loads((dirs["cache"] / "validation.json").read_text(encoding="utf-8"))
+        return stats, sorted(cache)
+
+    stats_a, keys_a = run(7, "a")
+    _, keys_b = run(7, "b")
+    _, keys_c = run(8, "c")
+    assert stats_a["candidates_total"] == 6
+    assert stats_a["by_ats"] == {"ashby": {"invalid": 3}, "greenhouse": {"invalid": 3}}
+    assert keys_a == keys_b
+    assert keys_a != keys_c
+
+
+def test_smartrecruiters_case_variants_collapse_to_one_board(tmp_path):
+    from company_dataset.build import merge_records
+    from company_dataset.models import SourceRecord
+
+    records = [
+        SourceRecord(source="moonie", ats="smartrecruiters", code="AbbVie", row_ref="1"),
+        SourceRecord(source="latmay", ats="smartrecruiters", code="abbvie", row_ref="2"),
+        SourceRecord(source="kaleb", ats="smartrecruiters", code="ABBVIE", row_ref="3"),
+    ]
+    candidates, stats = merge_records(records)
+    assert len(candidates) == 1
+    assert candidates[0].key == "smartrecruiters:abbvie"
+    assert candidates[0].codes == ["AbbVie", "abbvie", "ABBVIE"]
+    assert stats.duplicate_rows == 2
+
+    dirs = _dirs(tmp_path)
+    _write_candidates(dirs, [["smartrecruiters", "AbbVie", "abbvie;ABBVIE", "", "", "", "", "moonie;latmay;kaleb"]])
+    cache = {"smartrecruiters:abbvie": _valid(
+        "smartrecruiters", "AbbVie", company_name="AbbVie", company_identifier="AbbVie", jobs_count=40,
+    )}
+    (dirs["cache"] / "validation.json").write_text(json.dumps(cache))
+    (dirs["cache"] / "pages.json").write_text(json.dumps({}))
+
+    run_export(dirs, ref=Reference())
+
+    total = _read(dirs["output"] / "companies_total.csv")
+    assert [(r["ats_system"], r["ats_code"]) for r in total] == [("smartrecruiters", "AbbVie")]
+    assert total[0]["endpoint"] == "https://api.smartrecruiters.com/v1/companies/AbbVie/postings?limit=100"
+
+
+def test_verification_tier_for_added_platforms():
+    from company_dataset.export import _verification_tier
+    from company_dataset.models import Candidate
+
+    cand = Candidate(ats="workable", codes=["botpress"], name="Botpress")
+    assert _verification_tier("workable", {"status": "valid", "jobs_count": 3}, None, None, cand) == "A"
+    assert _verification_tier("workable", {"status": "valid", "jobs_count": 0, "company_name": "Botpress Technologies Inc."}, None, None, cand) == "C"
+    assert _verification_tier("workable", {"status": "valid", "jobs_count": 0, "company_name": "Other Co"}, None, None, cand) == ""
+    assert _verification_tier("rippling", {"status": "valid", "jobs_count": 0}, None, None, Candidate(ats="rippling", codes=["x"], name="X")) == ""
+    assert _verification_tier("workday", {"status": "unresolved", "jobs_count": 5}, None, None, cand) == ""
+
+
+def test_same_name_on_different_ats_never_merges_without_a_shared_key():
+    # Regression: final4 merged lever/ashby/teamtailor/workable "proxima" on name alone.
+    rows = [
+        _row("proxima", "", ats="lever", name="Proxima"),
+        _row("proxima", "", ats="ashby", name="Proxima"),
+        _row("proxima", "", ats="teamtailor", name="Proxima"),
+        _row("northwind", "https://northwind.com", ats="workable", name="Northwind Traders"),
+        _row("northwind", "https://northwind.de", ats="breezy", name="Northwind Traders"),
+    ]
+    kept, extras = collapse_companies(rows)
+    assert len(kept) == 5 and extras == []
+
+
+def test_shared_domain_with_different_names_is_not_one_company():
+    # Regression: one wrong website (nba.com) merged the Warriors, the Clippers and Kia Forum;
+    # separately incorporated affiliates on one parent domain were collapsed.
+    rows = [
+        _row("goldenstate", "https://www.nba.com", name="Golden State Warriors"),
+        _row("laclippers", "https://www.nba.com", name="LA Clippers"),
+        _row("pphp", "https://www.plannedparenthood.org", ats="lever", name="Planned Parenthood Pacific"),
+        _row("ppgnnj", "https://www.plannedparenthood.org", ats="lever", name="Planned Parenthood Greater Northern New Jersey"),
+    ]
+    kept, _ = collapse_companies(rows)
+    assert len(kept) == 4
+
+
+def test_same_domain_and_matching_name_is_one_company_including_subdomains():
+    rows = [
+        _row("acme", "https://acme.co.uk", name="Acme"),
+        _row("acmeinterns", "https://careers.acme.co.uk", ats="lever", name="Acme Ltd"),
+        _row("acmeus", "https://acme.com", name="Acme"),
+    ]
+    kept, extras = collapse_companies(rows)
+    assert sorted(r["ats_code"] for r in kept) == ["acme", "acmeus"]
+    assert [(r["ats_system"], r["ats_code"]) for r in extras] == [("lever", "acmeinterns")]
+
+
+def test_zero_job_board_without_identity_tier_is_not_delivered(tmp_path):
+    # Regression: 2,738 zero-job rows with no tier were exported (667 marked complete).
+    dirs = _dirs(tmp_path)
+    _write_candidates(dirs, [
+        ["lever", "emptyco", "", "", "Empty Co", "kalil", "", "kalil"],
+        ["lever", "busyco", "", "", "Busy Co", "kalil", "", "kalil"],
+    ])
+    cache = {
+        "lever:emptyco": _valid("lever", "emptyco", jobs_count=0),
+        "lever:busyco": _valid("lever", "busyco", jobs_count=2),
+    }
+    (dirs["cache"] / "validation.json").write_text(json.dumps(cache))
+    (dirs["cache"] / "pages.json").write_text(json.dumps({}))
+
+    run_export(dirs, ref=Reference())
+
+    assert [r["ats_code"] for r in _read(dirs["output"] / "companies_total.csv")] == ["busyco"]
+    uncertain = {r["ats_code"]: r["reason"] for r in _read(dirs["review"] / "uncertain_companies.csv")}
+    assert uncertain["emptyco"] == "identity_not_established"
+
+
+def test_valid_board_without_company_identity_is_uncertain_not_delivered(tmp_path):
+    dirs = _dirs(tmp_path)
+    _write_candidates(dirs, [
+        ["rippling", "noname", "", "", "", "", "", "feashliaa"],
+        ["rippling", "named", "", "", "Named Co", "kalil", "", "kalil"],
+    ])
+    cache = {
+        "rippling:noname": _valid("rippling", "noname", jobs_count=3),
+        "rippling:named": _valid("rippling", "named", jobs_count=3),
+    }
+    (dirs["cache"] / "validation.json").write_text(json.dumps(cache))
+    (dirs["cache"] / "pages.json").write_text(json.dumps({}))
+
+    stats = run_export(dirs, ref=Reference())
+
+    assert [r["ats_code"] for r in _read(dirs["output"] / "companies_total.csv")] == ["named"]
+    uncertain = _read(dirs["review"] / "uncertain_companies.csv")
+    assert [(r["ats_code"], r["reason"], r["http_status"]) for r in uncertain] == [("noname", "identity_not_established", "200")]
+    assert stats["post_validation_rejects"]["identity_not_established"] == 1

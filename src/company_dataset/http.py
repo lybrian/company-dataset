@@ -114,6 +114,27 @@ class HttpClient:
             return HttpResponse(status, _decode(resp), resp.url)
         raise RequestError(str(last_error))
 
+    def post_json(self, url: str, payload: dict) -> HttpResponse:
+        """POST a JSON body with the same throttling and retry rules as get()."""
+        throttle = self._throttle(url)
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            throttle.wait()
+            try:
+                resp = self.session.post(url, json=payload, timeout=self.timeout)
+            except Exception as exc:
+                last_error = exc
+                if attempt < self.max_attempts:
+                    self._backoff(attempt)
+                    continue
+                raise RequestError(str(exc)) from exc
+            status = resp.status_code
+            if status in self.RETRYABLE and attempt < self.max_attempts:
+                self._backoff(attempt)
+                continue
+            return HttpResponse(status, _decode(resp), resp.url)
+        raise RequestError(str(last_error))
+
     def _backoff(self, attempt: int):
         import random
 

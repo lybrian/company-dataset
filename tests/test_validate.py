@@ -696,10 +696,10 @@ def test_cli_rate_limit_overrides_are_passed(monkeypatch):
         "--breezy-max-concurrent", "3",
         "--breezy-delay-seconds", "1.5",
     ]) == 0
-    assert captured["rate_limits"] == {
-        "smartrecruiters": {"max_concurrent": 1, "delay_seconds": 0.25},
-        "breezy": {"max_concurrent": 3, "delay_seconds": 1.5},
-    }
+    limits = captured["rate_limits"]
+    assert limits["smartrecruiters"] == {"max_concurrent": 1, "delay_seconds": 0.25}
+    assert limits["breezy"] == {"max_concurrent": 3, "delay_seconds": 1.5}
+    assert limits["workable"] == {"max_concurrent": 3, "delay_seconds": 0.3}
 
 
 def test_cli_rejects_unknown_ats(monkeypatch):
@@ -707,4 +707,4 @@ def test_cli_rejects_unknown_ats(monkeypatch):
 
     monkeypatch.setattr(cli, "resolve_dirs", lambda data_dir: {})
     with pytest.raises(SystemExit):
-        cli.main(["validate", "--ats", "workday"])
+        cli.main(["validate", "--ats", "jazzhr"])

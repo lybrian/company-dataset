@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import threading
 import time
 from collections import Counter
@@ -22,6 +23,8 @@ from company_dataset.enrichment import (
 )
 from company_dataset.http import HttpClient, RequestError
 from company_dataset.models import BoardValidation, Candidate, utc_now
+from company_dataset.platforms import EXTRA_ATS
+from company_dataset.validate_extra import validate_extra
 from company_dataset.normalize import (
     ASHBY,
     BREEZY,
@@ -144,6 +147,8 @@ class BoardValidator:
             return self._validate_smartrecruiters(cand)
         if cand.ats == BREEZY:
             return self._validate_breezy(cand)
+        if cand.ats in EXTRA_ATS:
+            return validate_extra(self, cand)
         return BoardValidation(ats=cand.ats, code=cand.code, status=UNRESOLVED, error="unknown ats", checked_at=utc_now())
 
     def _validate_greenhouse(self, cand: Candidate) -> BoardValidation:
@@ -184,6 +189,8 @@ class BoardValidator:
                 company_name=company_name,
                 description=description,
                 website_url=facts["website_url"],
+                # The one API serves both instances; EU boards link their jobs on the EU host.
+                region_answered="eu" if ".eu.greenhouse.io/" in json.dumps(payload.get("jobs") or [])[:20000] else None,
                 code_validated=code,
                 checked_at=now,
             )
@@ -461,10 +468,19 @@ def run_validate(
     ats: set[str] | None = None,
     rate_limiter: AtsRateLimiter | None = None,
     rate_limits: dict[str, dict] | None = None,
+    sample: int | None = None,
+    seed: int = 1,
 ) -> dict:
     candidates = load_candidates(dirs)
     if ats:
         candidates = [c for c in candidates if c.ats in ats]
+    if sample is not None and sample > 0:
+        rnd = random.Random(seed)
+        sampled = []
+        for name in sorted({c.ats for c in candidates}):
+            group = sorted((c for c in candidates if c.ats == name), key=lambda c: c.key)
+            sampled.extend(rnd.sample(group, min(sample, len(group))))
+        candidates = sampled
     if not candidates:
         if ats:
             print(f"[validate] no candidates for ats={','.join(sorted(ats))}")

@@ -45,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--breezy-max-concurrent", type=int, default=None, help="Breezy per-ATS concurrency override")
     parser.add_argument("--breezy-delay-seconds", type=float, default=None, help="Breezy per-ATS delay override")
     parser.add_argument("--run-dir", type=str, default=None, help="output directory for this run (must not exist)")
+    parser.add_argument("--sample", type=int, default=None, help="validate a random sample of N boards per ATS after --ats filter (deterministic with --seed)")
+    parser.add_argument("--seed", type=int, default=1, help="random seed for --sample")
     parser.add_argument("--revalidate", action="store_true", help="ignore cached validation results")
     parser.add_argument("--max-age-days", type=float, default=None, help="recheck cached validation results older than this")
     parser.add_argument("--refresh", action="store_true", help="re-download sources even when a cached copy exists")
@@ -82,6 +84,8 @@ def main(argv=None) -> int:
             max_age_days=args.max_age_days,
             ats=args.ats,
             rate_limits=rate_limits,
+            sample=args.sample,
+            seed=args.seed,
         )
     if command in ("enrich", "all"):
         run_enrich(dirs, max_workers=args.workers, timeout=args.timeout)

@@ -42,7 +42,17 @@ def _check_report_overwrite(dirs: dict) -> list[Path]:
     return existing
 
 
-def run_report(dirs: dict) -> dict:
+def run_report(dirs: dict, run_dir: str | None = None) -> dict:
+    # Handle run_dir - adjust output paths
+    if run_dir is not None:
+        run_path = Path(run_dir)
+        dirs = dict(dirs)
+        dirs["reports"] = run_path / "reports"
+        dirs["output"] = run_path / "output"
+        dirs["review"] = run_path / "review"
+        for d in (dirs["reports"], dirs["output"], dirs["review"]):
+            d.mkdir(parents=True, exist_ok=True)
+    
     # No-overwrite check for report
     existing = _check_report_overwrite(dirs)
     if existing:
@@ -51,7 +61,8 @@ def run_report(dirs: dict) -> dict:
     
     build = _read_json(dirs["intermediate"] / "build_stats.json", {}) or {}
     validation = _read_json(dirs["intermediate"] / "validation_stats.json", {}) or {}
-    ex = _read_json(dirs["intermediate"] / "export_stats.json", {}) or {}
+    stats_dir = Path(run_dir) if run_dir is not None else dirs["intermediate"]
+    ex = _read_json(stats_dir / "export_stats.json", {}) or {}
 
     complete = ex.get("complete_companies", 0)
     live = ex.get("live_companies_after_collapse", 0)
@@ -104,6 +115,16 @@ def run_report(dirs: dict) -> dict:
         "ashby": "Ashby",
         "smartrecruiters": "SmartRecruiters",
         "breezy": "Breezy HR",
+        "workable": "Workable",
+        "workday": "Workday",
+        "bamboohr": "BambooHR",
+        "recruitee": "Recruitee",
+        "teamtailor": "Teamtailor",
+        "personio": "Personio",
+        "rippling": "Rippling",
+        "icims": "iCIMS",
+        "pinpoint": "Pinpoint",
+        "join": "JOIN",
     }
     for ats_key, ats_label in ATS_LABELS.items():
         L.append(f"| {ats_label} | {_n(ex.get('live_by_ats', {}).get(ats_key, 0))} | {_n(ex.get('complete_by_ats', {}).get(ats_key, 0))} |")
