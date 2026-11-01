@@ -320,3 +320,14 @@ def test_normalize_country_name():
     assert normalize_country_name("") is None
     assert normalize_country_name("Atlantis") is None
     assert normalize_country_name(None) is None
+
+
+def test_vendor_sandbox_and_seeded_candidate_boards_are_test_boards():
+    from company_dataset.enrichment import is_test_board
+
+    assert is_test_board("Sandbox: Millennium Hotels", "sandboxmillenniumhotels-demo")
+    assert is_test_board("Sandbox: Artea Bankas", "x")
+    assert is_test_board("ACME candidate 1", "acme")
+    assert is_test_board("Whatever", "acme-demo")
+    assert not is_test_board("Sandbox VR", "sandboxvr")
+    assert not is_test_board("Sandbox Interactive", "sandboxinteractive")
