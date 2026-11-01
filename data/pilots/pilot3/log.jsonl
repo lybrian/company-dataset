@@ -1,0 +1,30 @@
+{"t": "2026-10-31T19:56:59Z", "event": "excluded_run", "run": "pilot1", "boards": 4500}
+{"t": "2026-10-31T19:56:59Z", "event": "excluded_run", "run": "pilot2", "boards": 4500}
+{"t": "2026-10-31T19:56:59Z", "event": "sample", "size": 4500, "by_ats": {"ashby": 300, "bamboohr": 300, "breezy": 300, "greenhouse": 300, "icims": 300, "join": 300, "lever": 300, "personio": 300, "pinpoint": 300, "recruitee": 300, "rippling": 300, "smartrecruiters": 300, "teamtailor": 300, "workable": 300, "workday": 300}}
+{"t": "2026-10-31T19:57:11Z", "event": "stage1_progress", "done": 200, "of": 4500}
+{"t": "2026-10-31T19:57:25Z", "event": "stage1_progress", "done": 400, "of": 4500}
+{"t": "2026-10-31T19:57:40Z", "event": "stage1_progress", "done": 600, "of": 4500}
+{"t": "2026-10-31T19:57:54Z", "event": "stage1_progress", "done": 800, "of": 4500}
+{"t": "2026-10-31T19:58:13Z", "event": "stage1_progress", "done": 1000, "of": 4500}
+{"t": "2026-10-31T19:58:28Z", "event": "stage1_progress", "done": 1200, "of": 4500}
+{"t": "2026-10-31T19:58:43Z", "event": "stage1_progress", "done": 1400, "of": 4500}
+{"t": "2026-10-31T19:58:58Z", "event": "stage1_progress", "done": 1600, "of": 4500}
+{"t": "2026-10-31T19:59:18Z", "event": "stage1_progress", "done": 1800, "of": 4500}
+{"t": "2026-10-31T19:59:33Z", "event": "stage1_progress", "done": 2000, "of": 4500}
+{"t": "2026-10-31T19:59:48Z", "event": "stage1_progress", "done": 2200, "of": 4500}
+{"t": "2026-10-31T20:00:06Z", "event": "stage1_progress", "done": 2400, "of": 4500}
+{"t": "2026-10-31T20:00:26Z", "event": "stage1_progress", "done": 2600, "of": 4500}
+{"t": "2026-10-31T20:00:45Z", "event": "stage1_progress", "done": 2800, "of": 4500}
+{"t": "2026-10-31T20:01:04Z", "event": "stage1_progress", "done": 3000, "of": 4500}
+{"t": "2026-10-31T20:01:27Z", "event": "stage1_progress", "done": 3200, "of": 4500}
+{"t": "2026-10-31T20:01:48Z", "event": "stage1_progress", "done": 3400, "of": 4500}
+{"t": "2026-10-31T20:02:09Z", "event": "stage1_progress", "done": 3600, "of": 4500}
+{"t": "2026-10-31T20:02:29Z", "event": "stage1_progress", "done": 3800, "of": 4500}
+{"t": "2026-10-31T20:02:49Z", "event": "stage1_progress", "done": 4000, "of": 4500}
+{"t": "2026-10-31T20:03:09Z", "event": "stage1_progress", "done": 4200, "of": 4500}
+{"t": "2026-10-31T20:03:33Z", "event": "stage1_progress", "done": 4400, "of": 4500}
+{"t": "2026-10-31T20:03:53Z", "event": "stage1_done", "outcomes": {"dead_removed": 1143, "inconclusive": 179, "verified_live": 2281, "verified_live_zero_jobs": 889, "blocked_by_security": 6, "temporarily_unavailable": 1, "invalid_identifier": 1}}
+{"t": "2026-10-31T20:05:11Z", "event": "reference_1", "domains": 2405, "names": 3734, "matched_domains": 9186, "matched_names": 2397}
+{"t": "2026-10-31T20:16:19Z", "event": "homepages", "fetched": 3254, "ok": 2871}
+{"t": "2026-10-31T20:25:16Z", "event": "wikidata", "hosts": 1756, "matched": 360, "failed_batches": 0}
+{"t": "2026-10-31T20:25:17Z", "event": "done", "boards": 4500, "complete_strict": 1089, "complete_lenient": 1089}

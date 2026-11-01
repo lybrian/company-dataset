@@ -1,0 +1,137 @@
+{
+ "sample": 300,
+ "requests": 655,
+ "summary": {
+  "ashby": {
+   "checked": 19,
+   "http_200": 19,
+   "api_name_available": 0,
+   "api_name_matches_row": 0,
+   "api_name_differs": 0
+  },
+  "bamboohr": {
+   "checked": 11,
+   "http_200": 11,
+   "api_name_available": 11,
+   "api_name_matches_row": 11,
+   "api_name_differs": 0
+  },
+  "breezy": {
+   "checked": 63,
+   "http_200": 63,
+   "api_name_available": 63,
+   "api_name_matches_row": 61,
+   "api_name_differs": 2
+  },
+  "greenhouse": {
+   "checked": 32,
+   "http_200": 32,
+   "api_name_available": 32,
+   "api_name_matches_row": 32,
+   "api_name_differs": 0
+  },
+  "icims": {
+   "checked": 11,
+   "http_200": 11,
+   "api_name_available": 0,
+   "api_name_matches_row": 0,
+   "api_name_differs": 0
+  },
+  "join": {
+   "checked": 14,
+   "http_200": 14,
+   "api_name_available": 14,
+   "api_name_matches_row": 14,
+   "api_name_differs": 0
+  },
+  "lever": {
+   "checked": 18,
+   "http_200": 18,
+   "api_name_available": 0,
+   "api_name_matches_row": 0,
+   "api_name_differs": 0
+  },
+  "personio": {
+   "checked": 11,
+   "http_200": 11,
+   "api_name_available": 9,
+   "api_name_matches_row": 8,
+   "api_name_differs": 1
+  },
+  "pinpoint": {
+   "checked": 11,
+   "http_200": 11,
+   "api_name_available": 0,
+   "api_name_matches_row": 0,
+   "api_name_differs": 0
+  },
+  "recruitee": {
+   "checked": 12,
+   "http_200": 12,
+   "api_name_available": 12,
+   "api_name_matches_row": 12,
+   "api_name_differs": 0
+  },
+  "rippling": {
+   "checked": 13,
+   "http_200": 13,
+   "api_name_available": 0,
+   "api_name_matches_row": 0,
+   "api_name_differs": 0
+  },
+  "smartrecruiters": {
+   "checked": 55,
+   "http_200": 55,
+   "api_name_available": 55,
+   "api_name_matches_row": 55,
+   "api_name_differs": 0
+  },
+  "teamtailor": {
+   "checked": 10,
+   "http_200": 10,
+   "api_name_available": 10,
+   "api_name_matches_row": 10,
+   "api_name_differs": 0
+  },
+  "workable": {
+   "checked": 10,
+   "http_200": 10,
+   "api_name_available": 10,
+   "api_name_matches_row": 10,
+   "api_name_differs": 0
+  },
+  "workday": {
+   "checked": 10,
+   "http_200": 10,
+   "api_name_available": 0,
+   "api_name_matches_row": 0,
+   "api_name_differs": 0
+  }
+ },
+ "failures": [
+  {
+   "ats": "personio",
+   "code": "sfgroup",
+   "row_name": "SF Group",
+   "status": 200,
+   "api_name": "SF Group",
+   "name_match": false
+  },
+  {
+   "ats": "breezy",
+   "code": "smg",
+   "row_name": "SMG Security",
+   "status": 200,
+   "api_name": "Zeus Fire and Security",
+   "name_match": false
+  },
+  {
+   "ats": "breezy",
+   "code": "shoals-club",
+   "row_name": "Bald Head Island Club",
+   "status": 200,
+   "api_name": "Shoals Club",
+   "name_match": false
+  }
+ ]
+}

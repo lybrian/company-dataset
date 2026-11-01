@@ -1,0 +1,7 @@
+{"t": "2026-10-31T19:01:46Z", "event": "excluded_run", "run": "pilot1", "boards": 4500}
+{"t": "2026-10-31T19:01:46Z", "event": "sample", "size": 45, "by_ats": {"ashby": 3, "bamboohr": 3, "breezy": 3, "greenhouse": 3, "icims": 3, "join": 3, "lever": 3, "personio": 3, "pinpoint": 3, "recruitee": 3, "rippling": 3, "smartrecruiters": 3, "teamtailor": 3, "workable": 3, "workday": 3}}
+{"t": "2026-10-31T19:01:55Z", "event": "stage1_done", "outcomes": {"dead_removed": 14, "inconclusive": 1, "verified_live": 24, "verified_live_zero_jobs": 6}}
+{"t": "2026-10-31T19:03:14Z", "event": "reference_1", "domains": 25, "names": 34, "matched_domains": 83, "matched_names": 21}
+{"t": "2026-10-31T19:03:37Z", "event": "homepages", "fetched": 27, "ok": 22}
+{"t": "2026-10-31T19:05:05Z", "event": "wikidata", "hosts": 17, "matched": 3, "failed_batches": 0}
+{"t": "2026-10-31T19:05:05Z", "event": "done", "boards": 45, "complete_strict": 12, "complete_lenient": 12}

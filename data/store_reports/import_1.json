@@ -1,0 +1,185 @@
+{
+ "started_at": "2026-10-31T17:15:04Z",
+ "sources": {
+  "latmay": {
+   "status": "imported",
+   "records": 56130,
+   "rejects": 13508,
+   "sha256": "3ced7fbb2c7aca03b95493fc937937faab80215ca76624cae8f3b23c793f9ff0"
+  },
+  "lastroundai": {
+   "status": "imported",
+   "records": 9935,
+   "rejects": 0,
+   "sha256": "e637a04d06561bb3839dbf95a291e5fd11ac26b8f2858dc207939c1b723974a3"
+  },
+  "kaleb": {
+   "status": "imported",
+   "records": 12235,
+   "rejects": 0,
+   "sha256": "2396ecebbadd9f593a7aeff344bf384b04db3f9604e71964c6550c9cfd9ddb38"
+  },
+  "moonie": {
+   "status": "imported",
+   "records": 1475,
+   "rejects": 329,
+   "sha256": "63a3babde11641ecfb7388d448232e4573ab29f5d8eae5a3eda84ce13466f42c"
+  },
+  "feashliaa": {
+   "status": "imported",
+   "records": 44115,
+   "rejects": 6055,
+   "sha256": "3a893c7cc853c99e78cec102f22f2009c9eef03a9204a22308d3fe10aaa9eaa2"
+  },
+  "commoncrawl": {
+   "status": "imported",
+   "records": 32510,
+   "rejects": 0,
+   "sha256": "e6f995fd65b4bde4ff04894e71b45de10a8b84f10791246ee67fcbe7d7562797"
+  },
+  "headcountlabs": {
+   "status": "imported",
+   "records": 10499,
+   "rejects": 0,
+   "sha256": "b22bdd197f6211eb797d63c2a52845ef22737d1730e83dfd037388294c681682"
+  },
+  "openatsfeed": {
+   "status": "imported",
+   "records": 37611,
+   "rejects": 0,
+   "sha256": "4c822b11702f35219859abd4b90e5ffb1c34372a58299e5fe5de8d5161e35db8"
+  },
+  "kalil": {
+   "status": "imported",
+   "records": 63372,
+   "rejects": 19,
+   "sha256": "ec117a74175d7d42faa6adc30bd866f11f23258a81eccab68153922efe1f474d"
+  },
+  "joa": {
+   "status": "imported",
+   "records": 7797,
+   "rejects": 0,
+   "sha256": "4c393293f02effe07cf9e5683f1ebddb4f97f39f96bcf08e6f7629d33e39a135"
+  }
+ },
+ "caches": {
+  "main": {
+   "entries": 40333,
+   "inserted": 40052,
+   "no_source_row": 281
+  },
+  "work": {
+   "entries": 42303,
+   "already_present": 22622,
+   "inserted": 19400,
+   "no_source_row": 281
+  },
+  "work2": {
+   "entries": 13706,
+   "inserted": 12590,
+   "no_source_row": 1116
+  },
+  "work3": {
+   "entries": 55529,
+   "already_present": 52932,
+   "no_source_row": 1973,
+   "inserted": 624
+  },
+  "v2_join": {
+   "entries": 26903,
+   "already_present": 12587,
+   "no_source_row": 1116,
+   "inserted": 13200
+  },
+  "v2_recruitee": {
+   "entries": 14306,
+   "already_present": 12590,
+   "no_source_row": 1116,
+   "inserted": 600
+  },
+  "v2_teamtailor": {
+   "entries": 16372,
+   "already_present": 12585,
+   "inserted": 2671,
+   "no_source_row": 1116
+  },
+  "v2_personio": {
+   "entries": 15506,
+   "already_present": 12590,
+   "no_source_row": 1116,
+   "inserted": 1800
+  },
+  "v2_bamboohr": {
+   "entries": 26069,
+   "already_present": 13098,
+   "inserted": 11855,
+   "no_source_row": 1116
+  },
+  "run_workable": {
+   "entries": 14306,
+   "already_present": 12590,
+   "no_source_row": 1116,
+   "inserted": 600
+  },
+  "run_workday": {
+   "entries": 18482,
+   "already_present": 12590,
+   "no_source_row": 5892
+  },
+  "run_bamboohr": {
+   "entries": 19670,
+   "already_present": 18409,
+   "inserted": 145,
+   "no_source_row": 1116
+  }
+ },
+ "qa": {
+  "qa_ashby": {
+   "entries": 4330,
+   "inserted": 4330
+  },
+  "qa_bamboohr_join": {
+   "entries": 2975,
+   "inserted": 2975
+  },
+  "qa_breezy": {
+   "entries": 3775,
+   "inserted": 3775
+  },
+  "qa_greenhouse": {
+   "entries": 7980,
+   "inserted": 7980
+  },
+  "qa_lever": {
+   "entries": 2317,
+   "inserted": 2317
+  },
+  "qa_recruitee_te": {
+   "entries": 4902,
+   "inserted": 4902
+  },
+  "qa_smartrecruit": {
+   "entries": 1508,
+   "inserted": 1508
+  },
+  "qa_workable": {
+   "entries": 672,
+   "inserted": 672
+  }
+ },
+ "pages": {
+  "/Users/danuzz/company-dataset-scratch-archive-2026-10-31/work/cache/pages.json": {
+   "entries": 33932,
+   "written": 33932
+  },
+  "/Users/danuzz/company-dataset-scratch-archive-2026-10-31/work3/cache/pages.json": {
+   "entries": 33932,
+   "kept_existing": 33932
+  },
+  "data/cache/pages.json": {
+   "entries": 33932,
+   "kept_existing": 33932
+  }
+ },
+ "finished_at": "2026-10-31T17:15:09Z"
+}

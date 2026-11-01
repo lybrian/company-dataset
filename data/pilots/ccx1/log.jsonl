@@ -1,0 +1,20 @@
+{"t": "2026-11-01T07:03:00Z", "event": "only_source", "source": "commoncrawl_extra", "boards": 12413}
+{"t": "2026-11-01T07:03:00Z", "event": "sample", "size": 2764, "by_ats": {"bamboohr": 300, "icims": 300, "join": 300, "personio": 300, "pinpoint": 66, "recruitee": 300, "rippling": 300, "teamtailor": 298, "workable": 300, "workday": 300}}
+{"t": "2026-11-01T07:03:19Z", "event": "stage1_progress", "done": 200, "of": 2764}
+{"t": "2026-11-01T07:03:46Z", "event": "stage1_progress", "done": 400, "of": 2764}
+{"t": "2026-11-01T07:04:04Z", "event": "stage1_progress", "done": 600, "of": 2764}
+{"t": "2026-11-01T07:04:22Z", "event": "stage1_progress", "done": 800, "of": 2764}
+{"t": "2026-11-01T07:04:42Z", "event": "stage1_progress", "done": 1000, "of": 2764}
+{"t": "2026-11-01T07:05:01Z", "event": "stage1_progress", "done": 1200, "of": 2764}
+{"t": "2026-11-01T07:05:22Z", "event": "stage1_progress", "done": 1400, "of": 2764}
+{"t": "2026-11-01T07:05:43Z", "event": "stage1_progress", "done": 1600, "of": 2764}
+{"t": "2026-11-01T07:06:12Z", "event": "stage1_progress", "done": 1800, "of": 2764}
+{"t": "2026-11-01T07:06:50Z", "event": "stage1_progress", "done": 2000, "of": 2764}
+{"t": "2026-11-01T07:07:32Z", "event": "stage1_progress", "done": 2200, "of": 2764}
+{"t": "2026-11-01T07:08:12Z", "event": "stage1_progress", "done": 2400, "of": 2764}
+{"t": "2026-11-01T07:08:52Z", "event": "stage1_progress", "done": 2600, "of": 2764}
+{"t": "2026-11-01T07:09:48Z", "event": "stage1_done", "outcomes": {"dead_removed": 975, "verified_live": 917, "verified_live_zero_jobs": 666, "inconclusive": 36, "blocked_by_security": 30, "invalid_identifier": 1, "rate_limited": 138, "temporarily_unavailable": 1}}
+{"t": "2026-11-01T07:11:04Z", "event": "reference_1", "domains": 1339, "names": 1497, "matched_domains": 2700, "matched_names": 927}
+{"t": "2026-11-01T07:15:54Z", "event": "homepages", "fetched": 1539, "ok": 1346}
+{"t": "2026-11-01T07:22:20Z", "event": "wikidata", "hosts": 753, "matched": 132, "failed_batches": 0}
+{"t": "2026-11-01T07:22:20Z", "event": "done", "boards": 2764, "complete_strict": 381, "complete_lenient": 381}

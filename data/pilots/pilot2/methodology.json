@@ -1,0 +1,30 @@
+{
+ "args": {
+  "db": "data/store.db",
+  "raw": "data/raw_2026-10-31",
+  "run": "pilot2",
+  "out": "data/pilots/pilot2",
+  "per_ats": 300,
+  "seed": 20261101,
+  "workers": 24,
+  "ats": "",
+  "exclude_run": [
+   "pilot1"
+  ]
+ },
+ "code_sha256": {
+  "pilot.py": "ae6a6114ba9ddbf22efda0e6a5090169889a62c4f66fb31eeded63fa8c01a4fd",
+  "identity.py": "4d2bfdc3f2ef3585c207f132bcbf64e037b4f907b1762e7557ec0f74b78f481c",
+  "careersite.py": "6f83e21b8096ba25d091369e150ba1fc52bdb307b78a7ea7eabb9ca526a23a59",
+  "enrichment.py": "3d42d41ebc12d82377ba34038afa8becd2e0da11809f7991e9c7ede1fa8965c4",
+  "normalize.py": "e306606412cdd75083d767253d45d9fbc6ff58dcbe381a6ea8c35f2d30f5baa7",
+  "platforms.py": "c8178d3b25051130347fd7c567a76f7185c22d6d74dc1e0ce70cc59372354272",
+  "validate.py": "0068ae4c7cf02c33f75e766f2ae2f63bed38cfad0f3d37730e9c611280d50073",
+  "validate_extra.py": "645c885f7a5255ba3d88769ed6312e4c63832ccc8a653fde7b30f020bd665c48",
+  "verification.py": "b0b9596d766c2d03a70ed14ef8e33f757437bb6c6814404177b726c8fc0ce074",
+  "reference.py": "e524912668dbf29b56cee07c8e1466ccef033eefbccf1b33d21cd668dd385430",
+  "wikidata.py": "b8e434ab2996050d4959ba21291a217cd27e088e4368ea24fb52752e1705406e",
+  "resolve.py": "94af3db66d65095b1c995edae3ec033bbc2549b56f23f21524bf798c16ee7a83",
+  "store.py": "96ede2f7851b798723d451d23965cda0d3ce1263e507e8e5f88e93c8dbef2e6d"
+ }
+}

@@ -1,0 +1,50 @@
+{
+ "rows": 7145,
+ "removed_by_greenhouse_direct_check": {
+  "greenhouse_hosted_page_http_405_elsewhere": 1,
+  "greenhouse_hosted_page_error_elsewhere": 4,
+  "greenhouse_hosted_page_http_403_elsewhere": 2,
+  "greenhouse_hosted_page_http_404_elsewhere": 7,
+  "greenhouse_hosted_page_http_307_elsewhere": 1,
+  "greenhouse_hosted_page_ok_elsewhere": 1
+ },
+ "field_issues": {},
+ "duplicate_ats_boards": 0,
+ "duplicate_website_hosts": 0,
+ "duplicate_linkedin_urls": 2,
+ "duplicate_normalized_names": 61,
+ "csv_roundtrip_ok": true,
+ "by_ats": {
+  "ashby": 3094,
+  "greenhouse": 1791,
+  "lever": 1547,
+  "breezy": 693,
+  "smartrecruiters": 6,
+  "bamboohr": 4,
+  "workable": 4,
+  "rippling": 2,
+  "recruitee": 2,
+  "pinpoint": 1,
+  "teamtailor": 1
+ },
+ "jobs_rows": 149956,
+ "jobs_by_ats": {
+  "ashby": 50213,
+  "greenhouse": 63174,
+  "lever": 36000,
+  "bamboohr": 32,
+  "smartrecruiters": 374,
+  "pinpoint": 7,
+  "rippling": 13,
+  "recruitee": 10,
+  "teamtailor": 94,
+  "workable": 39
+ },
+ "companies_with_jobs_extracted": 5875,
+ "industry_methods": {
+  "unclassified_conflict": 697,
+  "unclassified": 1303,
+  "static_reference_join": 5145
+ },
+ "llm_classified": 0
+}

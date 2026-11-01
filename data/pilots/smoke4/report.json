@@ -1,0 +1,680 @@
+{
+ "boards": 45,
+ "complete_strict": 16,
+ "complete_lenient": 16,
+ "costs": {
+  "validation_calls": 45,
+  "board_page_fetches": 31,
+  "vendor_identity_fetches": 8,
+  "gh_content_fetches": 1,
+  "homepage_fetches": 37,
+  "english_variant_fetches": 28,
+  "wikidata_queries": 3
+ },
+ "timings_seconds": {
+  "sample": 1.1,
+  "validation_and_board_pages": 11.6,
+  "reference_scan_1": 78.6,
+  "homepages": 11.2,
+  "english_variants": 24.3,
+  "reference_scan_2": 78.6,
+  "wikidata": 4.9,
+  "resolve": 0.1
+ },
+ "by_ats": {
+  "ashby": {
+   "sampled": 3,
+   "outcomes": {
+    "verified_live": 2,
+    "dead_removed": 1
+   },
+   "live": 2,
+   "identity": {
+    "identity_confirmed": 2
+   },
+   "field_verified_of_live": {
+    "name": 2,
+    "website_url": 2,
+    "linkedin_url": 1,
+    "description": 1,
+    "careersite_url_verified": 2,
+    "careersite_url_blocked": 0,
+    "ats_system": 2,
+    "ats_code": 2
+   },
+   "complete_strict": 0,
+   "complete_lenient": 0,
+   "complete_strict_by_geo": {},
+   "live_by_geo": {
+    "US": 2
+   },
+   "live_with_jobs": 2,
+   "complete_strict_with_jobs": 0,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "ashby_public_website": 2
+    },
+    "linkedin_method": {
+     "homepage_link": 1
+    },
+    "description_method": {
+     "homepage_meta": 1
+    }
+   }
+  },
+  "bamboohr": {
+   "sampled": 3,
+   "outcomes": {
+    "dead_removed": 1,
+    "verified_live_zero_jobs": 1,
+    "verified_live": 1
+   },
+   "live": 2,
+   "identity": {
+    "identity_confirmed": 2
+   },
+   "field_verified_of_live": {
+    "name": 2,
+    "website_url": 2,
+    "linkedin_url": 1,
+    "description": 1,
+    "careersite_url_verified": 2,
+    "careersite_url_blocked": 0,
+    "ats_system": 2,
+    "ats_code": 2
+   },
+   "complete_strict": 0,
+   "complete_lenient": 0,
+   "complete_strict_by_geo": {},
+   "live_by_geo": {
+    "US": 1,
+    "unknown": 1
+   },
+   "live_with_jobs": 1,
+   "complete_strict_with_jobs": 0,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "reference_name_slug_domain": 2
+    },
+    "linkedin_method": {
+     "homepage_link+reference_agrees": 1
+    },
+    "description_method": {
+     "homepage_meta": 1
+    }
+   }
+  },
+  "breezy": {
+   "sampled": 3,
+   "outcomes": {
+    "dead_removed": 1,
+    "verified_live": 1,
+    "verified_live_zero_jobs": 1
+   },
+   "live": 2,
+   "identity": {
+    "identity_unresolved": 1,
+    "identity_confirmed": 1
+   },
+   "field_verified_of_live": {
+    "name": 1,
+    "website_url": 1,
+    "linkedin_url": 1,
+    "description": 1,
+    "careersite_url_verified": 2,
+    "careersite_url_blocked": 0,
+    "ats_system": 2,
+    "ats_code": 2
+   },
+   "complete_strict": 1,
+   "complete_lenient": 1,
+   "complete_strict_by_geo": {
+    "US": 1
+   },
+   "live_by_geo": {
+    "unknown": 1,
+    "US": 1
+   },
+   "live_with_jobs": 1,
+   "complete_strict_with_jobs": 0,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "board_link": 1
+    },
+    "linkedin_method": {
+     "homepage_link+reference_agrees": 1
+    },
+    "description_method": {
+     "homepage_meta": 1
+    }
+   }
+  },
+  "greenhouse": {
+   "sampled": 3,
+   "outcomes": {
+    "dead_removed": 2,
+    "verified_live": 1
+   },
+   "live": 1,
+   "identity": {
+    "identity_confirmed": 1
+   },
+   "field_verified_of_live": {
+    "name": 1,
+    "website_url": 1,
+    "linkedin_url": 1,
+    "description": 0,
+    "careersite_url_verified": 1,
+    "careersite_url_blocked": 0,
+    "ats_system": 1,
+    "ats_code": 1
+   },
+   "complete_strict": 0,
+   "complete_lenient": 0,
+   "complete_strict_by_geo": {},
+   "live_by_geo": {
+    "US": 1
+   },
+   "live_with_jobs": 1,
+   "complete_strict_with_jobs": 0,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "reference_name_slug_domain": 1
+    },
+    "linkedin_method": {
+     "bigpicture_by_verified_domain": 1
+    },
+    "description_method": {}
+   }
+  },
+  "icims": {
+   "sampled": 3,
+   "outcomes": {
+    "dead_removed": 2,
+    "verified_live": 1
+   },
+   "live": 1,
+   "identity": {
+    "identity_confirmed": 1
+   },
+   "field_verified_of_live": {
+    "name": 1,
+    "website_url": 1,
+    "linkedin_url": 1,
+    "description": 1,
+    "careersite_url_verified": 1,
+    "careersite_url_blocked": 0,
+    "ats_system": 1,
+    "ats_code": 1
+   },
+   "complete_strict": 1,
+   "complete_lenient": 1,
+   "complete_strict_by_geo": {
+    "unknown": 1
+   },
+   "live_by_geo": {
+    "unknown": 1
+   },
+   "live_with_jobs": 1,
+   "complete_strict_with_jobs": 1,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "board_link": 1
+    },
+    "linkedin_method": {
+     "homepage_link+reference_agrees": 1
+    },
+    "description_method": {
+     "homepage_meta": 1
+    }
+   }
+  },
+  "join": {
+   "sampled": 3,
+   "outcomes": {
+    "verified_live": 2,
+    "verified_live_zero_jobs": 1
+   },
+   "live": 3,
+   "identity": {
+    "identity_confirmed": 3
+   },
+   "field_verified_of_live": {
+    "name": 3,
+    "website_url": 1,
+    "linkedin_url": 1,
+    "description": 1,
+    "careersite_url_verified": 3,
+    "careersite_url_blocked": 0,
+    "ats_system": 3,
+    "ats_code": 3
+   },
+   "complete_strict": 1,
+   "complete_lenient": 1,
+   "complete_strict_by_geo": {
+    "US": 1
+   },
+   "live_by_geo": {
+    "unknown": 2,
+    "US": 1
+   },
+   "live_with_jobs": 2,
+   "complete_strict_with_jobs": 0,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "board_link_home_text": 1
+    },
+    "linkedin_method": {
+     "bigpicture_by_verified_domain": 1
+    },
+    "description_method": {
+     "homepage_meta": 1
+    }
+   }
+  },
+  "lever": {
+   "sampled": 3,
+   "outcomes": {
+    "dead_removed": 2,
+    "verified_live": 1
+   },
+   "live": 1,
+   "identity": {
+    "identity_confirmed": 1
+   },
+   "field_verified_of_live": {
+    "name": 1,
+    "website_url": 1,
+    "linkedin_url": 1,
+    "description": 1,
+    "careersite_url_verified": 1,
+    "careersite_url_blocked": 0,
+    "ats_system": 1,
+    "ats_code": 1
+   },
+   "complete_strict": 1,
+   "complete_lenient": 1,
+   "complete_strict_by_geo": {
+    "US": 1
+   },
+   "live_by_geo": {
+    "US": 1
+   },
+   "live_with_jobs": 1,
+   "complete_strict_with_jobs": 1,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "lever_home_page_link": 1
+    },
+    "linkedin_method": {
+     "homepage_link": 1
+    },
+    "description_method": {
+     "homepage_meta": 1
+    }
+   }
+  },
+  "personio": {
+   "sampled": 3,
+   "outcomes": {
+    "dead_removed": 1,
+    "verified_live": 2
+   },
+   "live": 2,
+   "identity": {
+    "identity_confirmed": 2
+   },
+   "field_verified_of_live": {
+    "name": 2,
+    "website_url": 2,
+    "linkedin_url": 2,
+    "description": 2,
+    "careersite_url_verified": 2,
+    "careersite_url_blocked": 0,
+    "ats_system": 2,
+    "ats_code": 2
+   },
+   "complete_strict": 2,
+   "complete_lenient": 2,
+   "complete_strict_by_geo": {
+    "unknown": 1,
+    "other": 1
+   },
+   "live_by_geo": {
+    "unknown": 1,
+    "other": 1
+   },
+   "live_with_jobs": 2,
+   "complete_strict_with_jobs": 2,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "board_link": 2
+    },
+    "linkedin_method": {
+     "homepage_link": 1,
+     "homepage_link+reference_agrees": 1
+    },
+    "description_method": {
+     "homepage_meta": 2
+    }
+   }
+  },
+  "pinpoint": {
+   "sampled": 3,
+   "outcomes": {
+    "verified_live": 3
+   },
+   "live": 3,
+   "identity": {
+    "identity_confirmed": 2,
+    "identity_unresolved": 1
+   },
+   "field_verified_of_live": {
+    "name": 2,
+    "website_url": 2,
+    "linkedin_url": 2,
+    "description": 2,
+    "careersite_url_verified": 3,
+    "careersite_url_blocked": 0,
+    "ats_system": 3,
+    "ats_code": 3
+   },
+   "complete_strict": 2,
+   "complete_lenient": 2,
+   "complete_strict_by_geo": {
+    "US": 2
+   },
+   "live_by_geo": {
+    "US": 2,
+    "unknown": 1
+   },
+   "live_with_jobs": 3,
+   "complete_strict_with_jobs": 2,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "board_link": 2
+    },
+    "linkedin_method": {
+     "bigpicture_by_verified_domain": 1,
+     "homepage_link+reference_agrees": 1
+    },
+    "description_method": {
+     "homepage_meta": 2
+    }
+   }
+  },
+  "recruitee": {
+   "sampled": 3,
+   "outcomes": {
+    "verified_live": 3
+   },
+   "live": 3,
+   "identity": {
+    "identity_confirmed": 3
+   },
+   "field_verified_of_live": {
+    "name": 3,
+    "website_url": 3,
+    "linkedin_url": 3,
+    "description": 2,
+    "careersite_url_verified": 3,
+    "careersite_url_blocked": 0,
+    "ats_system": 3,
+    "ats_code": 3
+   },
+   "complete_strict": 2,
+   "complete_lenient": 2,
+   "complete_strict_by_geo": {
+    "other": 2
+   },
+   "live_by_geo": {
+    "other": 2,
+    "unknown": 1
+   },
+   "live_with_jobs": 3,
+   "complete_strict_with_jobs": 2,
+   "flags": {
+    "homepage_description_not_english": 1
+   },
+   "methods": {
+    "website_method": {
+     "reference_name_slug_domain": 2,
+     "board_link": 1
+    },
+    "linkedin_method": {
+     "homepage_link+reference_agrees": 2,
+     "careersite_link": 1
+    },
+    "description_method": {
+     "homepage_meta_english_page": 1,
+     "homepage_meta": 1
+    }
+   }
+  },
+  "rippling": {
+   "sampled": 3,
+   "outcomes": {
+    "verified_live": 3
+   },
+   "live": 3,
+   "identity": {
+    "identity_confirmed": 3
+   },
+   "field_verified_of_live": {
+    "name": 3,
+    "website_url": 3,
+    "linkedin_url": 3,
+    "description": 2,
+    "careersite_url_verified": 3,
+    "careersite_url_blocked": 0,
+    "ats_system": 3,
+    "ats_code": 3
+   },
+   "complete_strict": 2,
+   "complete_lenient": 2,
+   "complete_strict_by_geo": {
+    "unknown": 1,
+    "US": 1
+   },
+   "live_by_geo": {
+    "unknown": 1,
+    "US": 1,
+    "other": 1
+   },
+   "live_with_jobs": 3,
+   "complete_strict_with_jobs": 2,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "reference_name_slug_domain": 2,
+     "board_job_ad_link": 1
+    },
+    "linkedin_method": {
+     "homepage_link": 1,
+     "bigpicture_by_verified_domain": 2
+    },
+    "description_method": {
+     "homepage_meta": 2
+    }
+   }
+  },
+  "smartrecruiters": {
+   "sampled": 3,
+   "outcomes": {
+    "inconclusive": 1,
+    "verified_live": 2
+   },
+   "live": 2,
+   "identity": {
+    "identity_confirmed": 2
+   },
+   "field_verified_of_live": {
+    "name": 2,
+    "website_url": 2,
+    "linkedin_url": 2,
+    "description": 2,
+    "careersite_url_verified": 2,
+    "careersite_url_blocked": 0,
+    "ats_system": 2,
+    "ats_code": 2
+   },
+   "complete_strict": 2,
+   "complete_lenient": 2,
+   "complete_strict_by_geo": {
+    "US": 2
+   },
+   "live_by_geo": {
+    "US": 2
+   },
+   "live_with_jobs": 2,
+   "complete_strict_with_jobs": 2,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "reference_name_slug_domain": 1,
+     "board_link_home_text": 1
+    },
+    "linkedin_method": {
+     "homepage_link": 1,
+     "homepage_link+reference_agrees": 1
+    },
+    "description_method": {
+     "homepage_meta": 2
+    }
+   }
+  },
+  "teamtailor": {
+   "sampled": 3,
+   "outcomes": {
+    "dead_removed": 1,
+    "verified_live": 2
+   },
+   "live": 2,
+   "identity": {
+    "identity_confirmed": 2
+   },
+   "field_verified_of_live": {
+    "name": 2,
+    "website_url": 2,
+    "linkedin_url": 2,
+    "description": 2,
+    "careersite_url_verified": 2,
+    "careersite_url_blocked": 0,
+    "ats_system": 2,
+    "ats_code": 2
+   },
+   "complete_strict": 2,
+   "complete_lenient": 2,
+   "complete_strict_by_geo": {
+    "other": 1,
+    "unknown": 1
+   },
+   "live_by_geo": {
+    "other": 1,
+    "unknown": 1
+   },
+   "live_with_jobs": 2,
+   "complete_strict_with_jobs": 2,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "reference_name_slug_domain": 1,
+     "careersite_redirect_domain": 1
+    },
+    "linkedin_method": {
+     "homepage_link+reference_agrees": 1,
+     "homepage_link": 1
+    },
+    "description_method": {
+     "homepage_meta": 1,
+     "homepage_meta_english_page": 1
+    }
+   }
+  },
+  "workable": {
+   "sampled": 3,
+   "outcomes": {
+    "dead_removed": 2,
+    "verified_live_zero_jobs": 1
+   },
+   "live": 1,
+   "identity": {
+    "identity_unresolved": 1
+   },
+   "field_verified_of_live": {
+    "name": 0,
+    "website_url": 1,
+    "linkedin_url": 1,
+    "description": 1,
+    "careersite_url_verified": 1,
+    "careersite_url_blocked": 0,
+    "ats_system": 1,
+    "ats_code": 1
+   },
+   "complete_strict": 0,
+   "complete_lenient": 0,
+   "complete_strict_by_geo": {},
+   "live_by_geo": {
+    "unknown": 1
+   },
+   "live_with_jobs": 0,
+   "complete_strict_with_jobs": 0,
+   "flags": {},
+   "methods": {
+    "website_method": {
+     "reference_name_slug_domain": 1
+    },
+    "linkedin_method": {
+     "homepage_link": 1
+    },
+    "description_method": {
+     "homepage_meta": 1
+    }
+   }
+  },
+  "workday": {
+   "sampled": 3,
+   "outcomes": {
+    "verified_live": 3
+   },
+   "live": 3,
+   "identity": {
+    "identity_unresolved": 2,
+    "identity_mismatch": 1
+   },
+   "field_verified_of_live": {
+    "name": 0,
+    "website_url": 0,
+    "linkedin_url": 0,
+    "description": 0,
+    "careersite_url_verified": 3,
+    "careersite_url_blocked": 0,
+    "ats_system": 3,
+    "ats_code": 3
+   },
+   "complete_strict": 0,
+   "complete_lenient": 0,
+   "complete_strict_by_geo": {},
+   "live_by_geo": {
+    "unknown": 3
+   },
+   "live_with_jobs": 3,
+   "complete_strict_with_jobs": 0,
+   "flags": {},
+   "methods": {
+    "website_method": {},
+    "linkedin_method": {},
+    "description_method": {}
+   }
+  }
+ }
+}
