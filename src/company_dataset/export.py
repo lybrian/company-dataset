@@ -350,7 +350,7 @@ def apply_linkedin_policy(companies: list[dict]) -> int:
 
 def _missing(row: dict, fresh_origin: str | None) -> list[str]:
     missing = [c for c in MANDATORY if not (row[c] or "").strip()]
-    if fresh_origin and row["verification_origin"] != fresh_origin:
+    if not missing and fresh_origin and row["verification_origin"] != fresh_origin:
         missing.append(FRESH_CHECK_MISSING)
     return missing
 

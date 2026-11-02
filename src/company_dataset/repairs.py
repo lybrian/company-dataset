@@ -8,6 +8,7 @@ picks a run up by naming it. Each step commits as one transaction.
     python -m company_dataset.repairs reverify-recovery --db data/store.db --run recovery_reverify_2026-11-03 --from-run recovery1
     python -m company_dataset.repairs descriptions-cached --db data/store.db --run desc_cached_2026-11-03 --from-runs fullrun,...
     python -m company_dataset.repairs descriptions-network --db data/store.db --run desc_network_2026-11-03 --from-runs fullrun,...
+    python -m company_dataset.repairs final-checks --db data/store.db --run final_qa_2026-11-03 --from-runs fullrun,...
 """
 from __future__ import annotations
 
@@ -22,16 +23,17 @@ from company_dataset.enrichment import (
     board_from_validation, clean_description, english_variant_urls, fetch_page, is_english, landing_site, linkedin_url,
 )
 from company_dataset.http import HttpClient
-from company_dataset.enrich import NON_MAIN_LABELS, board_ownership, official_landing, verify_homepage, website_supported
-from company_dataset.export import decided_rows
+from company_dataset.config import resolve_rate_limits
+from company_dataset.enrich import NON_MAIN_LABELS, PARKED_RE, board_ownership, official_landing, verify_homepage, website_supported
+from company_dataset.export import _latest_field_evidence_per_board_field, decided_rows
 from company_dataset.identity import (
     CONFIRMED, careers_branded_domain, domain_compatible, linkedin_compatible, name_claims, registrable_domain, resolve_identity,
 )
 from company_dataset.ingest import load_boards
 from company_dataset.models import Candidate, utc_now
-from company_dataset.normalize import CORE_ATS, SMARTRECRUITERS, canonical_board_url, clean_website, host_of, normalize_linkedin
-from company_dataset.validate import SR_NO_SUCH_COMPANY, smartrecruiters_generic_page
-from company_dataset.verification import INVALID_IDENTIFIER, LIVE, VERIFIED_LIVE_ZERO_JOBS
+from company_dataset.normalize import CORE_ATS, SMARTRECRUITERS, canonical_board_url, clean_website, host_of, normalize_linkedin, validation_endpoint
+from company_dataset.validate import SR_NO_SUCH_COMPANY, AtsRateLimiter, BoardValidator, smartrecruiters_generic_page
+from company_dataset.verification import INVALID_IDENTIFIER, LIVE, VERIFIED_LIVE_ZERO_JOBS, classify
 
 # Identity bases whose stored name is the vendor's own: the hosted page it came from is not stored.
 _VENDOR_BASES = ("vendor_only", "vendor_not_corroborated", "vendor")
@@ -339,9 +341,87 @@ def recover_descriptions_network(conn, run: str, from_runs: list[str], client: H
             "still_missing": len(missing) - sum(recovered.values())}
 
 
+# ---------------------------------------------------------------------------
+# The last check before an export
+# ---------------------------------------------------------------------------
+
+_DEAD_URL_STATUSES = ("http_404", "http_410", "error")
+_CHECK_BATCH = 200
+_CHECK_PASSES = 3
+
+
+def _check_board(validator: BoardValidator, row: dict) -> tuple[dict, dict, str]:
+    cand = Candidate(ats=row["ats_system"], codes=[row["ats_code"]], region=row["region"] or None, sources=[])
+    v = validator.validate_one(cand).to_dict()
+    return row, v, classify(v["status"], v.get("http_status"), v.get("error"), v.get("jobs_count"))
+
+
+def _dead_url_reason(client: HttpClient, url: str) -> str | None:
+    """Why a URL no longer counts: gone, unreachable, parked, or fallen back to generic search.
+    A 403 or 429 is a site refusing a robot, which says nothing about the page."""
+    page = fetch_page(client, url)
+    if page.get("status") in _DEAD_URL_STATUSES:
+        return page.get("status")
+    if page.get("status") != "ok":
+        return None
+    if PARKED_RE.search((page.get("title") or "") + " " + (page.get("description") or "")):
+        return "parked_or_for_sale"
+    if smartrecruiters_generic_page(page.get("final_url") or ""):
+        return "generic_job_search_page"
+    return None
+
+
+def _record_fresh_check(conn, run: str, row: dict, v: dict, outcome: str) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO verifications(board_id, checked_at, origin, endpoint, http_status, outcome, legacy_status, error,"
+        " jobs_count, code_validated, region_answered, provider_name, provider_identifier, provider_website, provider_description, provider_country)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (row["board_id"], v["checked_at"], run, validation_endpoint(row["ats_system"], row["ats_code"], v), v.get("http_status"), outcome, v["status"], v.get("error"),
+         v.get("jobs_count"), v.get("code_validated"), v.get("region_answered"), v.get("company_name"), v.get("company_identifier"),
+         v.get("website_url"), v.get("description"), v.get("country")))
+
+
+def final_checks(conn, run: str, from_runs: list[str], client: HttpClient, validator: BoardValidator, now: str, workers: int = 16) -> dict:
+    """Ask each provider again about every row that could be delivered, and fetch its optional URLs.
+    Writes in batches and skips boards already checked under this run, so it can be restarted."""
+    evidence = _latest_field_evidence_per_board_field(conn, from_runs)
+    already = {r[0] for r in conn.execute(f"SELECT DISTINCT board_id FROM verifications WHERE origin=? AND outcome IN ({','.join('?' * len(store.CONCLUSIVE))})", (run, *store.CONCLUSIVE))}
+    rows = [r for r in decided_rows(conn, from_runs) if r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE and r["description"] and r["board_id"] not in already]
+    outcomes = Counter()
+    urls_rejected = Counter()
+    pending = rows
+    for attempt in range(_CHECK_PASSES):
+        retry = []
+        for start in range(0, len(pending), _CHECK_BATCH):
+            batch = pending[start:start + _CHECK_BATCH]
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                checked = list(ex.map(lambda r: _check_board(validator, r), batch))
+            live_urls = [(row["board_id"], field, evidence[(row["board_id"], field)]["value"]) for row, _, outcome in checked if outcome in LIVE
+                         for field in ("website_url", "careersite_url") if (row["board_id"], field) in evidence and row[field]]
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                reasons = list(ex.map(lambda u: _dead_url_reason(client, clean_website(u[2]) if u[1] == "website_url" else u[2]), live_urls))
+            with conn:
+                for row, v, outcome in checked:
+                    if outcome in store.CONCLUSIVE or attempt == _CHECK_PASSES - 1:
+                        _record_fresh_check(conn, run, row, v, outcome)
+                        outcomes[outcome] += 1
+                    else:
+                        retry.append(row)
+                for (board_id, field, value), reason in zip(live_urls, reasons):
+                    if reason:
+                        conn.execute("INSERT OR IGNORE INTO field_evidence(board_id, field, value, method, evidence_url, evidence_text, status, observed_at, run)"
+                                     " VALUES (?,?,?,'fresh_check',?,?,'rejected',?,?)", (board_id, field, value, value, reason, utc_now(), run))
+                        urls_rejected[f"{field}:{reason}"] += 1
+            print(f"[final-check] pass {attempt + 1}: {start + len(batch)}/{len(pending)} {dict(outcomes)}", flush=True)
+        pending = retry
+        if not pending:
+            break
+    return {"boards": len(rows), "outcomes": dict(sorted(outcomes.items())), "urls_rejected": dict(sorted(urls_rejected.items()))}
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="company_dataset.repairs")
-    p.add_argument("step", choices=["sr-existence", "reresolve", "reverify-recovery", "descriptions-cached", "descriptions-network"])
+    p.add_argument("step", choices=["sr-existence", "reresolve", "reverify-recovery", "descriptions-cached", "descriptions-network", "final-checks"])
     p.add_argument("--db", required=True)
     p.add_argument("--run", required=True)
     p.add_argument("--from-runs", default="", help="reresolve: comma-separated runs whose newest decision per board is the starting point")
@@ -353,6 +433,9 @@ def main(argv=None) -> int:
         out = backfill_smartrecruiters_existence(conn, a.run, utc_now())
     elif a.step == "reresolve":
         out = reresolve_identities(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
+    elif a.step == "final-checks":
+        client = HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2)
+        out = final_checks(conn, a.run, [r for r in a.from_runs.split(",") if r], client, BoardValidator(client, rate_limiter=AtsRateLimiter(resolve_rate_limits())), utc_now())
     elif a.step == "descriptions-cached":
         out = recover_descriptions_cached(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
     elif a.step == "descriptions-network":

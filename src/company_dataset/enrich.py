@@ -172,7 +172,7 @@ def official_site(site: str) -> str | None:
     return site
 
 
-_PARKED_RE = re.compile(r"\bis for sale\b|\bbuy this domain\b|\bdomain (name )?for sale\b|\bparked (free|domain)\b", re.I)
+PARKED_RE = re.compile(r"\bis for sale\b|\bbuy this domain\b|\bdomain (name )?for sale\b|\bparked (free|domain)\b", re.I)
 
 
 def verify_homepage(page: dict | None, b: dict, names: list[str]) -> str | None:
@@ -185,7 +185,7 @@ def verify_homepage(page: dict | None, b: dict, names: list[str]) -> str | None:
     """
     if not page or page.get("status") != "ok":
         return None
-    if _PARKED_RE.search((page.get("title") or "") + " " + (page.get("description") or "")):
+    if PARKED_RE.search((page.get("title") or "") + " " + (page.get("description") or "")):
         return None
     if f"{b['ats']}:{b['code'].casefold()}" in (page.get("board_refs") or []):
         return f"links_to_board:{b['ats']}:{b['code']}"

@@ -263,3 +263,87 @@ def test_select_open_boards_covers_unresolved_and_confirmed_without_website_or_d
     assert open_board_ids(conn, ["fullrun"]) == {unresolved, bare}
     assert with_site not in open_board_ids(conn, ["fullrun"])
     assert dead not in open_board_ids(conn, ["fullrun"]) and other not in open_board_ids(conn, ["fullrun"])
+
+
+FRESH_JOBS = json.dumps({"jobs": [{"company_name": "Acme", "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/1"}], "meta": {"total": 1}})
+
+
+def fresh_setup(c, code="acme", website="https://acme.com"):
+    bid = confirmed(c, "greenhouse", code, code.title(), website=website)
+    c.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,'description',?,'m','verified','t','fullrun')", (bid, GOOD))
+    c.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,'careersite_url',?,'m','verified','t','fullrun')", (bid, f"https://job-boards.greenhouse.io/{code}"))
+    return bid
+
+
+def api(code, *responses):
+    return {f"https://boards-api.greenhouse.io/v1/boards/{code}/jobs": list(responses)}
+
+
+def run_fresh(c, script):
+    from company_dataset.validate import AtsRateLimiter, BoardValidator
+
+    client = HttpClient(session=FakeSession(script), sleep=lambda s: None, per_host_interval=0, max_attempts=1)
+    return repairs.final_checks(c, "qa", ["fullrun"], client, BoardValidator(client, rate_limiter=AtsRateLimiter({})), "2026-11-03T00:00:00Z", workers=2), client
+
+
+def rejected(c, bid):
+    return {r["field"] for r in c.execute("SELECT field FROM field_evidence WHERE board_id=? AND run='qa' AND status='rejected'", (bid,))}
+
+
+def test_final_checks_record_a_fresh_verification_and_leave_good_urls(conn):
+    bid = fresh_setup(conn)
+    stats, _ = run_fresh(conn, {**api("acme", FakeResponse(200, FRESH_JOBS)),
+                                "https://job-boards.greenhouse.io/acme": FakeResponse(200, "<title>Acme</title>", "https://job-boards.greenhouse.io/acme"),
+                                "https://acme.com": FakeResponse(200, "<title>Acme</title>", "https://acme.com")})
+    assert stats["boards"] == 1
+    assert stats["outcomes"] == {"verified_live": 1}
+    latest = store.latest_verifications(conn)[bid]
+    assert (latest["origin"], latest["outcome"]) == ("qa", "verified_live")
+    assert rejected(conn, bid) == set()
+
+
+def test_final_checks_reject_dead_and_parked_urls_but_not_blocked_ones(conn):
+    dead = fresh_setup(conn, "deadsite", "https://deadsite.com")
+    parked = fresh_setup(conn, "parkedsite", "https://parkedsite.com")
+    blocked = fresh_setup(conn, "blockedsite", "https://blockedsite.com")
+    script = {}
+    for code in ("deadsite", "parkedsite", "blockedsite"):
+        script.update(api(code, FakeResponse(200, FRESH_JOBS.replace("Acme", code))))
+        script[f"https://job-boards.greenhouse.io/{code}"] = FakeResponse(200, f"<title>{code}</title>", f"https://job-boards.greenhouse.io/{code}")
+    script["https://deadsite.com"] = FakeResponse(404, "", "https://deadsite.com")
+    script["https://parkedsite.com"] = FakeResponse(200, "<title>parkedsite.com is for sale</title>", "https://parkedsite.com")
+    script["https://blockedsite.com"] = FakeResponse(403, "", "https://blockedsite.com")
+    run_fresh(conn, script)
+    assert rejected(conn, dead) == {"website_url"}
+    assert rejected(conn, parked) == {"website_url"}
+    assert rejected(conn, blocked) == set()
+
+
+def test_final_checks_retry_inconclusive_boards_and_record_dead_ones(conn):
+    flaky = fresh_setup(conn, "flakyco", None)
+    gone = fresh_setup(conn, "goneco2", None)
+    stats, _ = run_fresh(conn, {
+        **api("flakyco", FakeResponse(503, ""), FakeResponse(200, FRESH_JOBS)),
+        **api("goneco2", FakeResponse(404, "")),
+        "https://job-boards.greenhouse.io/flakyco": FakeResponse(200, "<title>Flaky</title>", "https://job-boards.greenhouse.io/flakyco"),
+    })
+    latest = store.latest_verifications(conn)
+    assert latest[flaky]["outcome"] == "verified_live"
+    assert latest[gone]["outcome"] == "dead_removed"
+    assert stats["outcomes"] == {"dead_removed": 1, "verified_live": 1}
+
+
+def test_final_checks_resume_without_rechecking_finished_boards(conn):
+    bid = fresh_setup(conn, "doneco", None)
+    conn.execute("INSERT INTO verifications(board_id, checked_at, origin, outcome, jobs_count) VALUES (?,?,?,?,?)", (bid, "2026-11-03T00:00:00Z", "qa", "verified_live", 1))
+    conn.commit()
+    stats, client = run_fresh(conn, {})
+    assert stats["boards"] == 0
+    assert client.session.calls == []
+
+
+def test_final_checks_skip_rows_that_cannot_be_verified_anyway(conn):
+    no_description = confirmed(conn, "greenhouse", "nodesc", "No Desc")
+    stats, client = run_fresh(conn, {})
+    assert stats["boards"] == 0
+    assert no_description not in store.latest_verifications(conn) or client.session.calls == []

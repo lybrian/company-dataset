@@ -205,3 +205,9 @@ def test_a_handle_on_one_row_is_left_alone():
     rows = [company("Ogilvy Canada", "https://www.linkedin.com/company/ogilvy"), company("Other", "https://www.linkedin.com/company/other")]
     assert apply_linkedin_policy(rows) == 0
     assert all(r["linkedin_url"] for r in rows)
+
+
+def test_a_row_missing_a_mandatory_field_is_not_also_reported_as_unchecked(conn, tmp_path):
+    seed(conn, "greenhouse", "acme", "Acme", description=None, fresh=False)
+    run(conn, tmp_path / "out")
+    assert read(tmp_path / "out" / "companies_incomplete.csv")[0]["missing_fields"] == "description"
