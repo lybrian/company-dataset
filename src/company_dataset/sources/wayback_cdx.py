@@ -35,6 +35,9 @@ TARGETS = [
 MIN_SECONDS_BETWEEN_REQUESTS = 4.0  # at most 15 requests a minute
 BACKOFF_SECONDS = (30, 60, 120, 240, 480, 600)
 RETRY_STATUSES = (429, 500, 502, 503, 504)
+# The archive goes offline for spells; finished pages are on disk, so waiting costs nothing.
+MAX_RESTARTS = 24
+RESTART_WAIT_SECONDS = 1800
 
 META = SourceMeta(
     name="wayback_cdx_2026_11_03",
@@ -55,7 +58,7 @@ class HarvestStopped(Exception):
 
 def _query(target: tuple[str, str | None], **extra) -> str:
     url, match = target
-    params = {"url": url, "fl": "original", **extra}
+    params = {"url": url, **extra}
     if match:
         params["matchType"] = match
     return f"{CDX}?{urlencode(params)}"
@@ -79,6 +82,14 @@ def _get(client: HttpClient, url: str, sleep) -> str:
     raise HarvestStopped(url)
 
 
+def page_count(client: HttpClient, target: tuple[str, str | None], sleep) -> int:
+    # Asked together with fl=..., the server answers "-" instead of a number.
+    text = _get(client, _query(target, showNumPages="true"), sleep).strip()
+    if not text.isdigit():
+        raise HarvestStopped(f"no page count for {target[0]}: {text[:80]!r}")
+    return int(text)
+
+
 def harvest(raw_dir: Path, client: HttpClient, sleep=time.sleep, targets=TARGETS, max_pages: int | None = None) -> dict:
     """max_pages caps pages fetched in this call (for trial runs); tokens.csv waits for a complete harvest."""
     out = Path(raw_dir) / META.name
@@ -96,7 +107,7 @@ def harvest(raw_dir: Path, client: HttpClient, sleep=time.sleep, targets=TARGETS
     complete = True
     with open(log, "a", encoding="utf-8") as fh:
         for target in targets:
-            pages = int(_get(client, _query(target, showNumPages="true"), sleep).strip() or 0)
+            pages = page_count(client, target, sleep)
             for page in range(pages):
                 if (target[0], page) in done:
                     continue
@@ -104,7 +115,7 @@ def harvest(raw_dir: Path, client: HttpClient, sleep=time.sleep, targets=TARGETS
                     complete = False
                     break
                 seen = {}
-                for line in _get(client, _query(target, page=page), sleep).splitlines():
+                for line in _get(client, _query(target, page=page, fl="original"), sleep).splitlines():
                     url = line.strip()
                     board = board_from_url(url) if url else None
                     if board:
@@ -133,8 +144,14 @@ def main(argv=None) -> int:
     p.add_argument("--max-pages", type=int, default=None)
     a = p.parse_args(argv)
     client = HttpClient(timeout=180, max_attempts=1, per_host_interval=MIN_SECONDS_BETWEEN_REQUESTS)
-    print(json.dumps(harvest(Path(a.raw), client, max_pages=a.max_pages), indent=1))
-    return 0
+    for attempt in range(MAX_RESTARTS):
+        try:
+            print(json.dumps(harvest(Path(a.raw), client, max_pages=a.max_pages), indent=1))
+            return 0
+        except HarvestStopped as exc:
+            print(f"[wayback] stopped ({exc}); waiting {RESTART_WAIT_SECONDS}s, attempt {attempt + 1}/{MAX_RESTARTS}", flush=True)
+            time.sleep(RESTART_WAIT_SECONDS)
+    return 1
 
 
 if __name__ == "__main__":

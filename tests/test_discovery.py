@@ -38,7 +38,7 @@ def test_discovered_identifiers_carry_no_name_and_bad_rows_are_rejected(tmp_path
 
 TARGET = ("jobs.lever.co/*", None)
 NUM = wb._query(TARGET, showNumPages="true")
-P0, P1 = wb._query(TARGET, page=0), wb._query(TARGET, page=1)
+P0, P1 = wb._query(TARGET, page=0, fl="original"), wb._query(TARGET, page=1, fl="original")
 
 
 def read_tokens(path):
@@ -158,3 +158,13 @@ def test_new_sources_are_registered_and_ingest_can_select_them(tmp_path):
     assert list(report) == [wb.META.name]
     assert report[wb.META.name]["records"] == 1
     assert conn.execute("SELECT name FROM source_rows").fetchone()[0] is None
+
+
+def test_wayback_page_count_query_does_not_ask_for_fields():
+    assert "fl=" not in NUM and "showNumPages=true" in NUM
+    assert "fl=original" in P0
+
+
+def test_wayback_stops_when_the_page_count_is_not_a_number(tmp_path):
+    with pytest.raises(wb.HarvestStopped):
+        wb.harvest(tmp_path, client({NUM: FakeResponse(200, "-\n")}), sleep=lambda s: None, targets=[TARGET])
