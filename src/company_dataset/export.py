@@ -3,10 +3,12 @@
     python -m company_dataset.export --db data/store.db --runs fullrun,disc1 --out data/exports/final_YYYY-MM-DD
     python -m company_dataset.export --db data/store.db --run pilot1 --out data/exports/pilot1
 
---run exports one run; --runs merges several, where a board decided in more than one keeps its
-newest run's decision and evidence. Counts are kept apart: candidate boards, live boards,
-identity-confirmed boards, unique companies (clusters), complete companies. Companies are clustered
-with cluster_companies (strong shared keys + matching names), never on a name alone.
+--run exports one run; --runs builds the deliverable, merging several runs: a board decided in more
+than one keeps its newest run's decision and evidence. A company is verified when its board is live,
+its identity confirmed and company_name, description, ats_system and ats_code are all present;
+LinkedIn, website and careers URLs are filled only where verified. Companies are clustered with
+cluster_companies (strong shared keys + matching names), never on a name alone. Quality gates run
+on the output: if one fails, only a report is written, beside the output directory.
 
 Stored websites are re-checked with the current website rules using stored pages only (no
 fetches); a website that fails is dropped with the fields found through it. The rules can only
@@ -18,13 +20,18 @@ import argparse
 import csv
 import hashlib
 import json
+import re
+import shutil
 from collections import Counter, defaultdict
 from pathlib import Path
 
 from company_dataset import store
 from company_dataset.enrich import website_supported
-from company_dataset.identity import CONFIRMED, careers_branded_domain, cluster_companies
-from company_dataset.normalize import canonical_board_url, clean_website, host_of
+from company_dataset.enrichment import clean_description, clean_name, is_english, is_test_board
+from company_dataset.identity import CONFIRMED, _fold, careers_branded_domain, cluster_companies, linkedin_compatible
+from company_dataset.normalize import CORE_ATS, canonical_board_url, clean_website, host_of, normalize_linkedin
+from company_dataset.sources import SOURCES
+from company_dataset.validate import smartrecruiters_generic_page
 from company_dataset.verification import LIVE
 
 REQUIRED = ["company_name", "description", "linkedin_url", "website_url", "careersite_url", "ats_system", "ats_code"]
@@ -179,275 +186,313 @@ def _write(path: Path, cols: list[str], rows: list[dict]) -> None:
         w.writerows(rows)
 
 
-EXTRA = ["country", "verification_status", "verification_date", "verification_endpoint", "jobs_count",
-         "identity_status", "identity_basis", "identity_conflicts", "run"]
-BOARD_COLS = ["board_id", "ats_system", "ats_code", "region", "sources", "run", "identity_status", "identity_basis", "identity_conflicts",
-              "verification_status", "verification_date", "verification_endpoint", "jobs_count", "company_name",
-              "description", "linkedin_url", "website_url", "careersite_url", "careersite_evidence", "country"]
+# ---------------------------------------------------------------------------
+# The deliverable
+# ---------------------------------------------------------------------------
+
+MANDATORY = ["company_name", "description", "ats_system", "ats_code"]
+OPTIONAL = ["linkedin_url", "website_url", "careersite_url"]
+VERIFIED_COLUMNS = MANDATORY + OPTIONAL
+INCOMPLETE_COLUMNS = VERIFIED_COLUMNS + ["missing_fields", "other_boards", "verification_status", "verification_date", "jobs_count", "identity_basis"]
+UNRESOLVED_COLUMNS = ["board_id", "ats_system", "ats_code", "region", "sources", "run", "identity_status", "identity_basis", "identity_conflicts",
+                      "verification_status", "verification_date", "endpoint_public_jobs"]
+EVIDENCE_COLUMNS = ["board_id", "ats_system", "ats_code", "field", "status", "value", "method", "evidence_url", "evidence_text", "observed_at", "run"]
+FRESH_CHECK_MISSING = "fresh_check_not_passed"
+_URL_FIELDS = ("website_url", "careersite_url")
+_PLACEHOLDER_RE = re.compile(r"\b(lorem ipsum|placeholder|coming soon|under construction|example company|your company|test company)\b", re.I)
+_LEGAL_WORDS = frozenset("inc incorporated llc llp lp ltd limited corp corporation co company plc pbc gmbh ag ab as asa oy oyj bv nv sa sas sarl srl spa kg ug se pty pte the and".split())
+
+
+class ExportGateError(Exception):
+    """The output failed a quality gate: nothing was delivered."""
+
+
+def _normalize_url(field: str, value: str) -> str:
+    if field == "website_url":
+        return clean_website(value) or ""
+    if field == "linkedin_url":
+        return normalize_linkedin(value) or ""
+    return value
 
 
 def _latest_identity_per_board(conn, runs: list[str]) -> dict[int, dict]:
-    """Return identity row (newest run) per board across the given runs, joined with boards for ats/code."""
-    qmarks = ",".join("?" * len(runs))
-    q = (f"SELECT i.*, b.ats, b.code FROM identities i JOIN boards b ON b.id=i.board_id JOIN"
-         f" (SELECT board_id, MAX(decided_at || '|' || run) AS pick FROM identities WHERE run IN ({qmarks}) GROUP BY board_id) t"
-         f" ON i.board_id=t.board_id AND (i.decided_at || '|' || i.run)=t.pick")
-    id_rows = {r["board_id"]: r for r in conn.execute(q, runs)}
-    return id_rows
+    """Newest identity decision per target-ATS board across the given runs."""
+    marks = ",".join("?" * len(runs))
+    ats = ",".join("?" * len(CORE_ATS))
+    q = (f"SELECT i.*, b.ats, b.code, b.region FROM identities i JOIN boards b ON b.id=i.board_id JOIN"
+         f" (SELECT board_id, MAX(decided_at || '|' || run) AS pick FROM identities WHERE run IN ({marks}) GROUP BY board_id) t"
+         f" ON i.board_id=t.board_id AND (i.decided_at || '|' || i.run)=t.pick WHERE b.ats IN ({ats})")
+    return {r["board_id"]: r for r in conn.execute(q, (*runs, *CORE_ATS))}
 
 
 def _latest_field_evidence_per_board_field(conn, runs: list[str]) -> dict[tuple[int, str], dict]:
-    """Return newest verified field_evidence per (board, field) across runs."""
-    qmarks = ",".join("?" * len(runs))
+    """Newest verified field_evidence per (board, field) across runs."""
+    marks = ",".join("?" * len(runs))
     q = (f"SELECT e.* FROM field_evidence e JOIN"
-         f" (SELECT board_id, field, MAX(observed_at || '|' || id) AS pick FROM field_evidence WHERE run IN ({qmarks}) AND status='verified' GROUP BY board_id, field) t"
+         f" (SELECT board_id, field, MAX(observed_at || '|' || id) AS pick FROM field_evidence WHERE run IN ({marks}) AND status='verified' GROUP BY board_id, field) t"
          f" ON e.board_id=t.board_id AND e.field=t.field AND (e.observed_at || '|' || e.id)=t.pick")
-    ev_rows = {}
-    for r in conn.execute(q, runs):
-        ev_rows[(r["board_id"], r["field"])] = r
-    return ev_rows
+    return {(r["board_id"], r["field"]): r for r in conn.execute(q, runs)}
+
+
+def _latest_checks(conn, runs: list[str]) -> dict[int, dict]:
+    """A board's newest conclusive check in these runs, else its newest: a later 429 says nothing about it."""
+    marks = ",".join("?" * len(runs))
+    conclusive = ",".join("?" * len(store.CONCLUSIVE))
+    rows = conn.execute(
+        f"SELECT * FROM (SELECT v.*, ROW_NUMBER() OVER (PARTITION BY board_id ORDER BY CASE WHEN outcome IN ({conclusive}) THEN 1 ELSE 0 END DESC, checked_at DESC, id DESC) AS rn"
+        f" FROM verifications v WHERE origin IN ({marks})) WHERE rn=1", (*store.CONCLUSIVE, *runs))
+    return {r["board_id"]: r for r in rows}
+
+
+def _rejected_urls(conn, runs: list[str]) -> dict[tuple[int, str, str], str]:
+    """(board, field, value) -> when a URL field was last rejected: a later check found it dead."""
+    marks = ",".join("?" * len(runs))
+    fields = ",".join("?" * len(_URL_FIELDS))
+    q = (f"SELECT board_id, field, value, MAX(observed_at) AS at_ FROM field_evidence WHERE status='rejected' AND run IN ({marks}) AND field IN ({fields})"
+         " GROUP BY board_id, field, value")
+    return {(r["board_id"], r["field"], r["value"]): r["at_"] for r in conn.execute(q, (*runs, *_URL_FIELDS))}
+
+
+def _usable_description(text: str) -> bool:
+    """The current rules, applied to stored text. Only removes: a value that passes is kept as recorded."""
+    return bool(clean_description(text)) and is_english(text) and not _PLACEHOLDER_RE.search(text)
 
 
 def decided_rows(conn, runs: list[str]) -> list[dict]:
     """One merged row per board: newest identity run + per-field newest verified evidence across all runs."""
-    # Get newest identity per board (includes board_id, status, name, basis, ats, code, etc.)
-    id_map = _latest_identity_per_board(conn, runs)
-    regions = {r[0]: r[1] for r in conn.execute("SELECT id, region FROM boards")}
-    # Get newest verified evidence per (board, field) across all runs
-    ev_map = _latest_field_evidence_per_board_field(conn, runs)
-    # Sources per board
-    srcs = defaultdict(list)
+    identities = _latest_identity_per_board(conn, runs)
+    evidence = _latest_field_evidence_per_board_field(conn, runs)
+    checks = _latest_checks(conn, runs)
+    rejected = _rejected_urls(conn, runs)
+    sources = defaultdict(list)
     for r in conn.execute("SELECT DISTINCT sr.board_id, s.name FROM source_rows sr JOIN sources s ON s.id=sr.source_id WHERE sr.board_id IS NOT NULL ORDER BY sr.board_id, s.name"):
-        srcs[r[0]].append(r[1])
-    
+        sources[r[0]].append(r[1])
+
     out = []
-    for bid in sorted(id_map):
-        ident = id_map[bid]
-        run = ident["run"]
-        row = {"board_id": bid, "identity_status": ident["status"], "identity_basis": ident["basis"] or "",
-               "identity_conflicts": ident["conflicts"] or "", "run": run, "region": regions.get(bid) or "",
-               "ats_system": ident["ats"], "ats_code": ident["code"],
-               "company_name": "", "description": "", "linkedin_url": "", "website_url": "",
-               "careersite_url": "", "careersite_evidence": "", "country": "",
-               "website_method": "", "linkedin_method": "", "description_method": "",
-               "verification_status": "", "verification_date": "", "verification_endpoint": "", "jobs_count": "",
-               "sources": ";".join(srcs.get(bid, []))}
-        
-        # Newest verification per board across runs (verification origin = run)
-        qmarks = ",".join("?" * len(runs))
-        v = conn.execute(
-            f"SELECT v.* FROM verifications v JOIN"
-            f" (SELECT board_id, MAX(checked_at) AS at_ FROM verifications WHERE origin IN ({qmarks}) GROUP BY board_id) t"
-            f" ON v.board_id=t.board_id AND v.checked_at=t.at_ WHERE v.board_id=?", runs + [bid]
-        ).fetchone()
+    for bid in sorted(identities):
+        ident = identities[bid]
+        row = {"board_id": bid, "identity_status": ident["status"], "identity_basis": ident["basis"] or "", "identity_conflicts": ident["conflicts"] or "",
+               "run": ident["run"], "region": ident["region"] or "", "ats_system": ident["ats"], "ats_code": ident["code"],
+               "company_name": "", "description": "", "linkedin_url": "", "website_url": "", "careersite_url": "", "careersite_evidence": "", "country": "",
+               "website_method": "", "linkedin_method": "", "description_method": "", "verification_status": "", "verification_date": "",
+               "verification_endpoint": "", "verification_origin": "", "jobs_count": "", "sources": ";".join(sources.get(bid, []))}
+        v = checks.get(bid)
         if v:
-            row["verification_status"] = v["outcome"]
-            row["verification_date"] = v["checked_at"]
-            row["verification_endpoint"] = v["endpoint"] or ""
-            row["jobs_count"] = "" if v["jobs_count"] is None else v["jobs_count"]
-        
-        # Fields from evidence (only if identity confirmed and status verified)
-        FIELD_FOR = {"name": "company_name", "description": "description", "linkedin_url": "linkedin_url",
-                     "website_url": "website_url", "careersite_url": "careersite_url",
-                     "ats_system": "ats_system", "ats_code": "ats_code", "country": "country"}
+            row.update(verification_status=v["outcome"], verification_date=v["checked_at"], verification_endpoint=v["endpoint"] or "",
+                       verification_origin=v["origin"], jobs_count="" if v["jobs_count"] is None else v["jobs_count"])
+        website = None
         if row["identity_status"] == CONFIRMED:
             for field, col in FIELD_FOR.items():
-                key = (bid, field)
-                if key in ev_map:
-                    ev = ev_map[key]
-                    row[col] = ev["value"]
-                    if field in ("website_url", "linkedin_url", "description"):
-                        row[field.split("_")[0] + "_method"] = ev["method"]
-                    if field == "careersite_url":
-                        row["careersite_evidence"] = f"{ev['status']}:{ev['method']}"
-                        row["_careersite_landed"] = ev["evidence_url"] or ""
-                    if field == "country":
-                        row["_country_method"] = ev["method"]
-                    if field == "website_url":
-                        row["_website_evidence"] = {"method": ev["method"], "url": ev["evidence_url"] or "",
-                                                    "evidence_text": ev["evidence_text"] or "",
-                                                    "status": ev["status"]}
-        
-        # Website rule re-check on merged website evidence (if present)
-        if row.get("_website_evidence"):
-            w = row["_website_evidence"]
-            # Build verification-style dict for website_rule_failure: value = verified website URL
-            w_legacy = {"value": row["website_url"], "method": w["method"], "evidence_url": w["url"], "evidence_text": w["evidence_text"] or ""}
-            # Use identity name from the identity row
-            ident_name = ident["name"] if ident["name"] else None
-            rule = website_rule_failure(conn, w_legacy, ident_name)
-            if rule:
-                drop_website(row)
-        
-        # If identity not confirmed, wipe company name (per legacy behavior)
-        if row["identity_status"] != CONFIRMED:
+                ev = evidence.get((bid, field))
+                if not ev:
+                    continue
+                dead_since = rejected.get((bid, field, ev["value"]))
+                if dead_since and dead_since >= ev["observed_at"]:
+                    continue
+                row[col] = ev["value"]
+                if field in ("website_url", "linkedin_url", "description"):
+                    row[field.split("_")[0] + "_method"] = ev["method"]
+                if field == "careersite_url":
+                    row["careersite_evidence"] = f"{ev['status']}:{ev['method']}"
+                    row["_careersite_landed"] = ev["evidence_url"] or ""
+                if field == "country":
+                    row["_country_method"] = ev["method"]
+                if field == "website_url":
+                    website = ev
+        if website and website_rule_failure(conn, website, ident["name"] or None):
+            drop_website(row)
+        row["website_url"] = _normalize_url("website_url", row["website_url"])
+        row["linkedin_url"] = _normalize_url("linkedin_url", row["linkedin_url"])
+        if row["description"] and not _usable_description(row["description"]):
+            row["description"] = row["description_method"] = ""
+        if row["company_name"] and (not clean_name(row["company_name"], row["ats_code"]) or _PLACEHOLDER_RE.search(row["company_name"])):
             row["company_name"] = ""
-        
-        row.pop("_website_evidence", None)  # internal, not exported
         out.append(row)
     return out
 
 
-def build_export(conn, runs: list[str], out_dir: Path) -> dict:
+def _handle_names_company(handle: str, name: str) -> bool:
+    """Every word of the name, legal forms aside, appears in the handle: "Xebia UK" / xebia-uk, not "Xebia UK" / xebia."""
+    words = [w for w in re.findall(r"[a-z0-9]+", _fold(name).lower()) if w not in _LEGAL_WORDS]
+    flat = re.sub(r"[^a-z0-9]", "", _fold(handle).lower())
+    return bool(words) and all(w in flat for w in words)
+
+
+def _parent_of(rows: list[dict], handle: str) -> dict | None:
+    """The row whose name's words all appear in every other row's name, when the handle fits it: "VGW" among "VGW Australia", "VGW USA"."""
+    def words(r):
+        return {w for w in re.findall(r"[a-z0-9]+", _fold(r["company_name"]).lower()) if w not in _LEGAL_WORDS}
+
+    shortest = min(rows, key=lambda r: len(words(r)))
+    fits = handle.isdigit() or linkedin_compatible(handle, shortest["company_name"], None)
+    return shortest if fits and all(words(shortest) < words(r) for r in rows if r is not shortest) else None
+
+
+def apply_linkedin_policy(companies: list[dict]) -> int:
+    """A handle shared across company rows belongs to the parent: it stays only where it names
+    the row's company. A row's own website is not considered, since subsidiaries share it. Returns rows cleared."""
+    groups = defaultdict(list)
+    for r in companies:
+        if r["linkedin_url"]:
+            groups[r["linkedin_url"].lower()].append(r)
+    cleared = 0
+    for url, rows in groups.items():
+        if len(rows) < 2:
+            continue
+        handle = url.rsplit("/", 1)[-1]
+        parent = _parent_of(rows, handle)
+        for r in rows:
+            if r is not parent and not _handle_names_company(handle, r["company_name"]):
+                r["linkedin_url"] = r["linkedin_method"] = ""
+                cleared += 1
+    return cleared
+
+
+def _missing(row: dict, fresh_origin: str | None) -> list[str]:
+    missing = [c for c in MANDATORY if not (row[c] or "").strip()]
+    if fresh_origin and row["verification_origin"] != fresh_origin:
+        missing.append(FRESH_CHECK_MISSING)
+    return missing
+
+
+def _evidence_index(conn, runs: list[str]) -> dict[tuple[int, str], set]:
+    marks = ",".join("?" * len(runs))
+    index: dict[tuple[int, str], set] = defaultdict(set)
+    for r in conn.execute(f"SELECT board_id, field, value FROM field_evidence WHERE status='verified' AND run IN ({marks})", runs):
+        index[(r["board_id"], r["field"])].add(_normalize_url(r["field"], r["value"]))
+    return index
+
+
+def quality_gates(verified: list[dict], evidence: dict, fresh_origin: str | None) -> dict:
+    """Everything a delivered row must satisfy, checked on the output rather than assumed from how it was built."""
+    failures: dict[str, list[str]] = defaultdict(list)
+    seen = set()
+    fields = {"name": "company_name", "description": "description", "ats_system": "ats_system", "ats_code": "ats_code",
+              "linkedin_url": "linkedin_url", "website_url": "website_url", "careersite_url": "careersite_url"}
+    for r in verified:
+        ref = f"{r['ats_system']}:{r['ats_code']}"
+        if any(not (r[c] or "").strip() for c in MANDATORY):
+            failures["mandatory_fields"].append(ref)
+        if r["ats_system"] not in CORE_ATS:
+            failures["ats_scope"].append(ref)
+        if r["identity_status"] != CONFIRMED or r["verification_status"] not in LIVE:
+            failures["confirmed_and_live"].append(ref)
+        if fresh_origin and r["verification_origin"] != fresh_origin:
+            failures["fresh_check"].append(ref)
+        for field, col in fields.items():
+            if r[col] and r[col] not in evidence.get((r["board_id"], field), ()):
+                failures["evidence"].append(f"{ref}:{field}")
+        if r["website_url"] and clean_website(r["website_url"]) != r["website_url"]:
+            failures["url_format"].append(f"{ref}:website_url={r['website_url']}")
+        if r["linkedin_url"] and normalize_linkedin(r["linkedin_url"]) != r["linkedin_url"]:
+            failures["url_format"].append(f"{ref}:linkedin_url={r['linkedin_url']}")
+        if r["careersite_url"] and (not r["careersite_url"].startswith(("https://", "http://")) or smartrecruiters_generic_page(r["careersite_url"])):
+            failures["url_format"].append(f"{ref}:careersite_url={r['careersite_url']}")
+        key = (r["ats_system"], r["ats_code"].casefold())
+        if key in seen:
+            failures["unique_boards"].append(ref)
+        seen.add(key)
+        if is_test_board(r["company_name"], "") or _PLACEHOLDER_RE.search(r["company_name"]) or _PLACEHOLDER_RE.search(r["description"]):
+            failures["placeholder"].append(ref)
+    return {"passed": not failures, "failure_counts": {k: len(v) for k, v in sorted(failures.items())},
+            "failures": {k: sorted(v)[:25] for k, v in sorted(failures.items())}}
+
+
+def _source_summaries(conn, verified: list[dict], incomplete: list[dict]) -> list[dict]:
+    attribution = {m.META.name: m.META for m in SOURCES}
+    counts = Counter()
+    only = Counter()
+    for r in verified:
+        names = [s for s in r["sources"].split(";") if s]
+        counts.update(names)
+        if len(names) == 1:
+            only[names[0]] += 1
+    out = []
+    for s in conn.execute("SELECT id, name, url, license, rows_read, imported_at FROM sources ORDER BY name").fetchall():
+        rows = conn.execute("SELECT COUNT(*), COUNT(board_id), COUNT(DISTINCT board_id) FROM source_rows WHERE source_id=?", (s["id"],)).fetchone()
+        meta = attribution.get(s["name"])
+        out.append({"source": s["name"], "url": s["url"] or "", "license": s["license"] or "", "attribution": meta.attribution if meta else "",
+                    "rows_read": s["rows_read"], "rejected_rows": rows[0] - rows[1], "boards": rows[2], "imported_at": s["imported_at"],
+                    "companies_verified": counts[s["name"]], "companies_verified_only_from_this_source": only[s["name"]]})
+    return out
+
+
+def _evidence_rows(conn, runs: list[str], delivered: list[dict]) -> list[dict]:
+    marks = ",".join("?" * len(runs))
+    ats = ",".join("?" * len(CORE_ATS))
+    q = (f"SELECT e.board_id, b.ats AS ats_system, b.code AS ats_code, e.field, e.status, e.value, e.method, e.evidence_url, e.evidence_text, e.observed_at, e.run"
+         f" FROM field_evidence e JOIN boards b ON b.id=e.board_id WHERE e.run IN ({marks}) AND b.ats IN ({ats})")
+    rows = [dict(r) for r in conn.execute(q, (*runs, *CORE_ATS))]
+    for r in delivered:
+        if r["jobs_count"] != "":
+            rows.append({"board_id": r["board_id"], "ats_system": r["ats_system"], "ats_code": r["ats_code"], "field": "jobs_count", "status": "verified", "value": str(r["jobs_count"]),
+                         "method": "provider_api", "evidence_url": r["verification_endpoint"], "evidence_text": "", "observed_at": r["verification_date"], "run": r["verification_origin"]})
+    rows.sort(key=lambda r: (r["board_id"], r["field"], r["observed_at"] or "", r["run"] or "", r["method"] or "", r["value"] or ""))
+    return rows
+
+
+def build_export(conn, runs: list[str], out_dir: Path, fresh_origin: str | None = None) -> dict:
+    """fresh_origin: the run whose provider re-check every verified row must have passed."""
+    out_dir = Path(out_dir)
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     rows = decided_rows(conn, runs)
     confirmed = [r for r in rows if r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE]
     clusters = cluster_companies([{"name": r["company_name"], "website_url": r["website_url"], "website_verified": bool(r["website_url"]),
-                                   "linkedin_url": r["linkedin_url"], "ats_system": r["ats_system"], "ats_code": r["ats_code"]}
-                                  for r in confirmed])
-    companies, links, merges = [], [], []
+                                   "linkedin_url": r["linkedin_url"], "ats_system": r["ats_system"], "ats_code": r["ats_code"]} for r in confirmed])
+    companies, merged = [], 0
     for g in clusters:
-        members = sorted((confirmed[i] for i in g), key=lambda r: (not is_complete(r), -sum(bool(r[c]) for c in REQUIRED),
+        members = sorted((confirmed[i] for i in g), key=lambda r: (bool(_missing(r, fresh_origin)), -sum(bool(r[c]) for c in VERIFIED_COLUMNS),
                                                                    -(int(r["jobs_count"] or 0)), r["ats_system"], r["ats_code"].casefold()))
         primary = dict(members[0])
-        cid = f"c{primary['board_id']}"
-        primary["company_id"] = cid
         primary["other_boards"] = ";".join(f"{m['ats_system']}:{m['ats_code']}" for m in members[1:])
         companies.append(primary)
-        if len(members) > 1:
-            merges.append({"company_id": cid, "name": primary["company_name"],
-                           "primary_board": f"{primary['ats_system']}:{primary['ats_code']}",
-                           "merged_boards": ";".join(f"{m['ats_system']}:{m['ats_code']}" for m in members[1:]),
-                           "primary_website": primary["website_url"], "primary_linkedin": primary["linkedin_url"],
-                           "shared_website": len({m["website_url"] for m in members if m["website_url"]}) == 1 and bool(members[-1]["website_url"]),
-                           "shared_linkedin": len({m["linkedin_url"] for m in members if m["linkedin_url"]}) == 1 and bool(members[-1]["linkedin_url"]),
-                           "boards_count": len(members)})
+        merged += len(members) > 1
     companies.sort(key=lambda r: (r["company_name"].casefold(), r["ats_system"], r["ats_code"].casefold()))
-    merges.sort(key=lambda r: r["company_id"])
-    complete = [r for r in companies if is_complete(r)]
-    incomplete = [r for r in companies if not is_complete(r)]
-    unresolved = [r for r in rows if r["identity_status"] in ("identity_unresolved", "identity_mismatch") and r["verification_status"] in LIVE]
-
-    # possible duplicates: same company name, different company records
-    seen_names: dict[str, list[str]] = defaultdict(list)
+    linkedin_cleared = apply_linkedin_policy(companies)
     for r in companies:
-        seen_names[r["company_name"].casefold()].append(f"{r['ats_system']}:{r['ats_code']}:{r['company_id']}")
-    possible = [{"name_form": name, "instances": ";".join(sorted(instances)), "count": len(instances)}
-                for name, instances in sorted(seen_names.items()) if len(instances) > 1]
-
-    # verification evidence trail: every field_evidence row for boards decided in the runs
-    qmarks = ",".join("?" * len(runs))
-    evidence_q = ("SELECT e.board_id, e.field, e.value, e.method, e.evidence_url, e.evidence_text, e.status,"
-                  " e.observed_at, e.run, b.ats, b.code FROM field_evidence e JOIN boards b ON b.id=e.board_id"
-                  f" WHERE e.run IN ({qmarks}) ORDER BY e.board_id, e.field, e.observed_at, e.run")
-    evidence = [{"board_id": r[0], "field": r[1], "value": r[2], "method": r[3], "evidence_url": r[4],
-                 "evidence_text": r[5], "status": r[6], "observed_at": r[7], "run": r[8],
-                 "ats_system": r[9], "ats_code": r[10]} for r in conn.execute(evidence_q, runs)]
-
-    # rejected records: every source row the adapters refused (global, not run-specific)
-    rejects_q = ("SELECT s.name AS source_name, sr.row_ref, sr.ats, sr.code, sr.region, sr.name, sr.reject_reason, sr.reject_detail"
-                 " FROM source_rows sr JOIN sources s ON s.id=sr.source_id WHERE sr.board_id IS NULL ORDER BY s.name, sr.row_ref")
-    rejects = [{"source_name": r[0], "row_ref": r[1], "ats_system": r[2], "ats_code": r[3], "region": r[4] or "",
-                "name_from_source": r[5] or "", "reject_reason": r[6] or "", "reject_detail": r[7] or ""}
-               for r in conn.execute(rejects_q)]
-
-    # unresolved: candidate boards the ATS serves as live but whose company identity stays unconfirmed
-    unresolved_rows = []
-    for r in unresolved:
-        unresolved_rows.append({
-            "board_id": r["board_id"], "ats_system": r["ats_system"], "ats_code": r["ats_code"], "region": r["region"],
-            "sources": r["sources"], "run": r["run"], "identity_status": r["identity_status"], "identity_basis": r["identity_basis"],
-            "verification_status": r["verification_status"], "verification_date": r["verification_date"],
-            "endpoint_public_jobs": canonical_board_url(r["ats_system"], r["ats_code"], r["region"]),
-            "careersite_url": r["careersite_url"], "website_url": r["website_url"]})
-
-    # source breakdown across the whole store
-    breakdown = []
-    for s in conn.execute("SELECT id, name, url, rows_read, imported_at FROM sources ORDER BY name").fetchall():
-        sid, name = s["id"], s["name"]
-        pairs_q = ("SELECT COUNT(DISTINCT COALESCE(board_id, ats||'|'||code)) FROM source_rows WHERE source_id=?")
-        boards_q = ("SELECT COUNT(DISTINCT sr.board_id) FROM source_rows sr WHERE sr.source_id=? AND sr.board_id IN"
-                    f" (SELECT board_id FROM identities i WHERE i.run IN ({qmarks}))")
-        records = conn.execute("SELECT COUNT(*) FROM source_rows WHERE source_id=?", (sid,)).fetchone()[0]
-        boards_total = conn.execute(pairs_q, (sid,)).fetchone()[0]
-        decided = conn.execute(boards_q, (sid, *runs)).fetchone()[0]
-        live_qmarks = ",".join("?" * len(LIVE))
-        live = conn.execute("SELECT COUNT(DISTINCT sr.board_id) FROM source_rows sr JOIN verifications v ON v.board_id=sr.board_id"
-                            f" WHERE sr.source_id=? AND v.outcome IN ({live_qmarks}) AND v.origin IN ({qmarks})",
-                            (sid, *LIVE, *runs)).fetchone()[0]
-        breakdown.append({"source": name, "url": s["url"] or "", "rows_read": s["rows_read"], "records": records,
-                          "rejects": records - conn.execute("SELECT COUNT(*) FROM source_rows WHERE source_id=? AND board_id IS NOT NULL", (sid,)).fetchone()[0],
-                          "boards_contributed": boards_total, "boards_decided": decided, "live_boards": live,
-                          "imported_at": s["imported_at"]})
-
-    # spot check: deterministic 1-in-N sample of complete companies, review-ready
-    n = max(1, len(complete) // 30) if complete else 0
-    spots = []
-    for r in complete[:: n or 1]:
-        spots.append({"company_name": r["company_name"], "description": r["description"], "linkedin_url": r["linkedin_url"],
-                      "website_url": r["website_url"], "careersite_url": r["careersite_url"],
-                      "ats_board": f"{r['ats_system']}:{r['ats_code']}", "website_method": r["website_method"],
-                      "linkedin_method": r["linkedin_method"], "careersite_evidence": r["careersite_evidence"],
-                      "country": r["country"], "jobs_count": r["jobs_count"]})
-    spot = {"sample_n": len(spots), "method": "every Nth complete company after sort (N=%d)" % n}
-
-    cols = REQUIRED + EXTRA
-    _write(out_dir / "companies_verified.csv", REQUIRED, complete)
-    _write(out_dir / "companies_all_confirmed.csv", cols + ["missing_fields", "other_boards"],
-           [{**r, "missing_fields": ";".join(c for c in REQUIRED if not r[c]) or ("careersite_unverified" if not is_complete(r) else "")} for r in companies])
-    _write(out_dir / "companies_incomplete.csv", cols + ["missing_fields", "other_boards"],
-           [{**r, "missing_fields": ";".join(c for c in REQUIRED if not r[c]) or ("careersite_unverified" if not is_complete(r) else "")} for r in incomplete])
-    _write(out_dir / "boards_all.csv", BOARD_COLS, rows)
-    _write(out_dir / "duplicates_and_merges.csv", ["company_id", "name", "primary_board", "merged_boards", "primary_website",
-                                                   "primary_linkedin", "shared_website", "shared_linkedin", "boards_count"], merges)
-    _write(out_dir / "possible_duplicates.csv", ["name_form", "instances", "count"], possible)
-    _write(out_dir / "verification_evidence.csv",
-           ["board_id", "ats_system", "ats_code", "field", "status", "value", "method", "evidence_url", "evidence_text", "observed_at", "run"],
-           evidence)
-    _write(out_dir / "rejected_records.csv",
-           ["source_name", "row_ref", "ats_system", "ats_code", "region", "name_from_source", "reject_reason", "reject_detail"], rejects)
-    _write(out_dir / "unresolved_records.csv",
-           ["board_id", "ats_system", "ats_code", "region", "sources", "run", "identity_status", "identity_basis",
-            "verification_status", "verification_date", "endpoint_public_jobs", "careersite_url", "website_url"], unresolved_rows)
-    _write(out_dir / "source_breakdown.csv",
-           ["source", "url", "rows_read", "records", "rejects", "boards_contributed", "boards_decided", "live_boards", "imported_at"], breakdown)
-    _write(out_dir / "spot_check.csv", ["company_name", "description", "linkedin_url", "website_url", "careersite_url",
-                                        "ats_board", "website_method", "linkedin_method", "careersite_evidence", "country", "jobs_count"], spots)
-
-    counts = {
-        "runs": runs,
+        r["missing_fields"] = ";".join(_missing(r, fresh_origin))
+    verified = [r for r in companies if not r["missing_fields"]]
+    incomplete = [r for r in companies if r["missing_fields"]]
+    unresolved = [{**r, "endpoint_public_jobs": canonical_board_url(r["ats_system"], r["ats_code"], r["region"])} for r in rows
+                  if r["identity_status"] in ("identity_unresolved", "identity_mismatch") and r["verification_status"] in LIVE]
+    gates = quality_gates(verified, _evidence_index(conn, runs), fresh_origin)
+    descriptions = Counter(r["description"].strip().casefold() for r in verified)
+    report = {
+        "runs": runs, "fresh_origin": fresh_origin, "gates": gates,
         "boards_decided": len(rows),
         "live_boards": sum(1 for r in rows if r["verification_status"] in LIVE),
-        "boards_not_live": len(rows) - sum(1 for r in rows if r["verification_status"] in LIVE),
         "identity_confirmed_live_boards": len(confirmed),
-        "unique_companies": len(companies),
-        "complete_companies": len(complete),
-        "incomplete_companies": len(incomplete),
-        "unresolved_live_boards": len(unresolved),
-        "merged_companies": len(merges),
-        "evidence_rows": len(evidence),
-        "rejected_records": len(rejects),
-        "source_breakdown": len(breakdown),
-        "spot_check": spot,
-        "boards_by_ats": {},
-        "companies_by_ats": {},
+        "unique_companies": len(companies), "companies_verified": len(verified), "companies_incomplete": len(incomplete),
+        "unresolved_live_boards": len(unresolved), "merged_companies": merged, "linkedin_handles_cleared_from_subsidiaries": linkedin_cleared,
+        "optional_fields_in_verified": {c: sum(1 for r in verified if r[c]) for c in OPTIONAL},
+        "missing_fields_in_incomplete": dict(sorted(Counter(m for r in incomplete for m in r["missing_fields"].split(";")).items())),
+        "zero_job_companies_in_verified": sum(1 for r in verified if str(r["jobs_count"]) == "0"),
+        "repeated_descriptions_for_review": [{"description": d[:200], "companies": n} for d, n in sorted(descriptions.items(), key=lambda x: (-x[1], x[0])) if n > 1][:100],
         "boards_by_outcome": dict(sorted(Counter(r["verification_status"] for r in rows).items())),
         "identity_by_status": dict(sorted(Counter(r["identity_status"] for r in rows).items())),
-        "sources": sorted({s for r in rows for s in (r["sources"] or "").split(";") if s}),
+        "by_ats": {ats: {"boards": sum(1 for r in rows if r["ats_system"] == ats),
+                         "live": sum(1 for r in rows if r["ats_system"] == ats and r["verification_status"] in LIVE),
+                         "unique_companies": sum(1 for r in companies if r["ats_system"] == ats),
+                         "companies_verified": sum(1 for r in verified if r["ats_system"] == ats),
+                         "companies_incomplete": sum(1 for r in incomplete if r["ats_system"] == ats)} for ats in sorted(CORE_ATS)},
     }
-    for ats in sorted({r["ats_system"] for r in rows}):
-        g = [r for r in rows if r["ats_system"] == ats]
-        cs = [r for r in companies if r["ats_system"] == ats]
-        counts["boards_by_ats"][ats] = {
-            "boards": len(g),
-            "live": sum(1 for r in g if r["verification_status"] in LIVE),
-            "not_live": sum(1 for r in g if r["verification_status"] not in LIVE),
-            "identity_confirmed_live": sum(1 for r in g if r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE),
-            "unique_companies": len(cs),
-            "complete_companies": sum(1 for r in cs if is_complete(r)),
-        }
-        counts["companies_by_ats"][ats] = {
-            "unique_companies": len(cs),
-            "complete_companies": sum(1 for r in cs if is_complete(r)),
-            "incomplete_companies": sum(1 for r in cs if not is_complete(r)),
-            "merged_companies": sum(1 for m in merges if m["primary_board"].startswith(f"{ats}:")),
-        }
-    (out_dir / "counts.json").write_text(json.dumps(counts, indent=1, sort_keys=True) + "\n")
+    if not gates["passed"]:
+        failed = out_dir.with_name(out_dir.name + ".failed")
+        shutil.rmtree(failed, ignore_errors=True)
+        failed.mkdir(parents=True)
+        (failed / "qa_report.json").write_text(json.dumps(report, indent=1, sort_keys=True) + "\n")
+        raise ExportGateError(f"quality gates failed, see {failed / 'qa_report.json'}: {gates['failure_counts']}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _write(out_dir / "companies_verified.csv", VERIFIED_COLUMNS, verified)
+    _write(out_dir / "companies_incomplete.csv", INCOMPLETE_COLUMNS, incomplete)
+    _write(out_dir / "unresolved_boards.csv", UNRESOLVED_COLUMNS, unresolved)
+    _write(out_dir / "evidence.csv", EVIDENCE_COLUMNS, _evidence_rows(conn, runs, companies))
+    (out_dir / "sources.json").write_text(json.dumps(_source_summaries(conn, verified, incomplete), indent=1, sort_keys=True) + "\n")
+    (out_dir / "qa_report.json").write_text(json.dumps(report, indent=1, sort_keys=True) + "\n")
     digests = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(out_dir.iterdir())}
     (out_dir / "SHA256SUMS").write_text("".join(f"{h}  {n}\n" for n, h in digests.items()))
-    return counts
+    return report
 
 
 def main(argv=None) -> int:
@@ -457,9 +502,10 @@ def main(argv=None) -> int:
     which.add_argument("--run", help="export one run")
     which.add_argument("--runs", help="comma-separated run labels to merge")
     p.add_argument("--out", required=True)
+    p.add_argument("--fresh-origin", help="--runs: the run whose provider re-check every verified row must have passed")
     a = p.parse_args(argv)
     conn = store.connect(a.db)
-    counts = run_export(conn, a.run, Path(a.out)) if a.run else build_export(conn, [r for r in a.runs.split(",") if r], Path(a.out))
+    counts = run_export(conn, a.run, Path(a.out)) if a.run else build_export(conn, [r for r in a.runs.split(",") if r], Path(a.out), a.fresh_origin)
     print(json.dumps(counts, indent=1))
     return 0
 
