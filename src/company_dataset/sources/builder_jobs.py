@@ -22,6 +22,7 @@ META = SourceMeta(
     license_url="https://github.com/zachproffitt/builder-jobs-scraper",
     license_note="Public GitHub repository; no license file. Every board is independently verified against its provider before use.",
     attribution="zachproffitt/builder-jobs-scraper (GitHub)",
+    downloadable=False,
 )
 
 

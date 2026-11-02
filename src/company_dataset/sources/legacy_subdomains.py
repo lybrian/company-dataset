@@ -24,6 +24,7 @@ META = SourceMeta(
     license_url="https://commoncrawl.org/terms-of-use/",
     license_note="Only host labels (factual board identifiers) are extracted from the index; every token is independently live-verified against the vendor's public API before export. No page content is used.",
     attribution="Common Crawl Foundation, crawls 2019-50 through CC-MAIN-2026-43",
+    downloadable=False,
 )
 
 

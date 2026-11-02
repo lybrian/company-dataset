@@ -18,6 +18,7 @@ class SourceMeta:
     license_url: str = ""
     license_note: str = ""
     attribution: str = ""
+    downloadable: bool = True  # False: download_url documents the origin; the raw file came from a one-off harvest
 
 
 @dataclass

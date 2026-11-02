@@ -21,6 +21,7 @@ META = SourceMeta(
     license_url="https://github.com/RichJacobs69/job-analytics",
     license_note="Public GitHub repository; no license file. Every board is independently verified against its provider before use.",
     attribution="RichJacobs69/job-analytics (GitHub)",
+    downloadable=False,
 )
 
 

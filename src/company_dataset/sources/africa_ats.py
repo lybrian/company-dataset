@@ -20,6 +20,7 @@ META = SourceMeta(
     license_url="https://github.com/Thelastpoet/africa-ats-directory",
     license_note="Public GitHub repository; no license file. Every board is independently verified against its provider before use.",
     attribution="Thelastpoet/africa-ats-directory (GitHub)",
+    downloadable=False,
 )
 
 

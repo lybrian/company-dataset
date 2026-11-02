@@ -69,6 +69,10 @@ def run_download(dirs: dict, client: HttpClient | None = None, refresh: bool = F
             "downloaded_at": previous.get(meta.name, {}).get("downloaded_at"),
         }
         needs = refresh or not _has_data(dest)
+        if not meta.downloadable and not hasattr(mod, "run_download"):
+            if not _has_data(dest):
+                entry["error"] = "not downloadable: harvested once, raw file kept outside the pipeline"
+            needs = False
         if needs:
             try:
                 if hasattr(mod, "run_download"):

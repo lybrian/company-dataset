@@ -296,3 +296,39 @@ def test_joa_takes_board_tokens_from_apply_urls_once(tmp_path):
         ("greenhouse", "jdsports", "eu", "JD Sports"),
     ]
     assert [r.reason for r in rejects] == ["invalid_json"]
+
+
+HARVEST_ONLY = ("africa_ats", "builder_jobs", "commoncrawl_gapfill", "jobanalytics", "legacy_subdomains")
+
+
+def test_harvested_adapters_are_registered_but_never_downloaded(tmp_path):
+    from company_dataset.config import resolve_dirs
+    from company_dataset.download import run_download
+    from company_dataset.http import HttpClient
+    from company_dataset.sources import SOURCES
+
+    by_name = {mod.META.name: mod for mod in SOURCES}
+    for name in HARVEST_ONLY:
+        assert by_name[name].META.downloadable is False
+
+    class NoNetwork:
+        def get(self, url, **kwargs):
+            assert not any(host in url for host in ("github.com/Thelastpoet", "github.com/zachproffitt", "github.com/RichJacobs69", "cc-index/collections")), url
+            raise OSError("offline")
+
+    dirs = resolve_dirs(tmp_path)
+    entries = {e["source"]: e for e in run_download(dirs, client=HttpClient(session=NoNetwork(), sleep=lambda s: None, max_attempts=1))}
+    for name in HARVEST_ONLY:
+        assert entries[name]["error"] == "not downloadable: harvested once, raw file kept outside the pipeline"
+        assert not (dirs["raw"] / name / "tokens.csv").exists()
+
+
+def test_harvested_adapter_with_no_raw_file_reports_file_missing(tmp_path):
+    from company_dataset import store
+    from company_dataset.sources import africa_ats
+    from company_dataset.store_import import import_sources
+
+    conn = store.connect(tmp_path / "s.db")
+    report = import_sources(conn, tmp_path, "t", modules=[africa_ats])
+    assert report["africa_ats"]["status"] == "file_missing"
+    assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
