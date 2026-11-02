@@ -223,3 +223,11 @@ def test_dormant_smartrecruiters_board_matched_only_by_name_is_not_a_confirmed_c
     assert sorted(r["ats_code"] for r in read(tmp_path / "out" / "companies_verified.csv")) == ["busy", "linked", "other"]
     row = read(tmp_path / "out" / "unresolved_boards.csv")[0]
     assert (row["ats_code"], row["identity_basis"]) == ("cdc", export.SR_NAME_GUESS)
+
+
+def test_stored_slogans_from_board_pages_do_not_count_as_descriptions(conn, tmp_path):
+    bid = seed(conn, "breezy", "nimble", "Nimble Credit Solutions", description=None)
+    conn.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,?,?,?,'verified','t','r1')",
+                 (bid, "description", "BECOME A PART OF THE NIMBLE SUCCESS STORY NOW! Great things are happening here at this company.", "board_page_meta"))
+    run(conn, tmp_path / "out")
+    assert read(tmp_path / "out" / "companies_incomplete.csv")[0]["missing_fields"] == "description"

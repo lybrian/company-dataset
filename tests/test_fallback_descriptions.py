@@ -97,7 +97,7 @@ def test_cascade_order_vendor_then_meta_then_paragraph_then_board():
     c = client({site: page(meta(GOOD), site), site + "/about": page(f"<p>{PARA}</p>", site + "/about")})
     assert fd.cascade(c, target(website=site)).method == "homepage_meta"
     # No meta anywhere: the first clean paragraph, /about before the homepage.
-    c = client({site: page("<title>Acme</title><p>Welcome to the site of a business that sells many fine goods to people.</p>", site), site + "/about": page(f"<p>{PARA}</p>", site + "/about")})
+    c = client({site: page("<title>Acme</title><p>Welcome to the site of a business that sells many fine goods to many happy people.</p>", site), site + "/about": page(f"<p>{PARA}</p>", site + "/about")})
     assert fd.cascade(c, target(website=site)).method == "about_page_paragraph"
     # Nothing on the site: text on the hosted board.
     c = client({info: FakeResponse(200, json.dumps({"content": ""})), board: page(f"<p>{PARA}</p>", board)})

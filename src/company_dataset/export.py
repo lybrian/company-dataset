@@ -26,6 +26,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from company_dataset import store
+from company_dataset.description_rules import acceptable
 from company_dataset.enrich import REFERENCE_NAME_BASIS, website_supported
 from company_dataset.enrichment import clean_description, clean_name, is_english, is_test_board
 from company_dataset.identity import CONFIRMED, _fold, careers_branded_domain, cluster_companies, linkedin_compatible
@@ -315,7 +316,7 @@ def decided_rows(conn, runs: list[str]) -> list[dict]:
             drop_website(row)
         row["website_url"] = _normalize_url("website_url", row["website_url"])
         row["linkedin_url"] = _normalize_url("linkedin_url", row["linkedin_url"])
-        if row["description"] and not _usable_description(row["description"]):
+        if row["description"] and not (_usable_description(row["description"]) and acceptable(row["description_method"], row["description"], row["company_name"])):
             row["description"] = row["description_method"] = ""
         if row["company_name"] and (not clean_name(row["company_name"], row["ats_code"]) or _PLACEHOLDER_RE.search(row["company_name"])):
             row["company_name"] = ""

@@ -24,6 +24,7 @@ from html.parser import HTMLParser
 from urllib.parse import quote
 
 from company_dataset import store
+from company_dataset.description_rules import acceptable
 from company_dataset.enrich import PARKED_RE
 from company_dataset.enrichment import ENGLISH_HEADERS, clean_description, homepage_description, is_english, parse_page
 from company_dataset.export import _latest_identity_per_board, decided_rows
@@ -147,11 +148,11 @@ def about_section(html: str, name: str) -> str | None:
     return None
 
 
-def first_paragraph(html: str, name: str) -> str | None:
+def first_paragraph(html: str, name: str, method: str = "homepage_paragraph") -> str | None:
     for tag, text in text_blocks(html):
         if tag in ("p", "div", "section", "article"):
             hit = _accept_paragraph(text, name)
-            if hit:
+            if hit and acceptable(method, hit, name):
                 return hit
     return None
 
@@ -241,21 +242,22 @@ def cascade(client: HttpClient, t: Target) -> Found | None:
                 text = usable_page_description(text)
             elif text and not is_english(text):
                 text = None
-            if text:
-                return Found(text, f"{label}_meta" if suffix else "homepage_meta", url)
+            method = f"{label}_meta" if suffix else "homepage_meta"
+            if text and acceptable(method, text, t.name):
+                return Found(text, method, url)
     board = canonical_board_url(t.ats, t.code, t.region or None)
     board_html = _html(client, board, None)
     if board_html:
         text = usable_page_description(homepage_description(parse_page(board_html)))
-        if text:
+        if text and acceptable("board_page_meta", text, t.name):
             return Found(text, "board_page_meta", board)
     for label in ("about_page", "careers_page", "homepage"):
         if label in pages:
-            text = first_paragraph(pages[label][1], t.name)
+            text = first_paragraph(pages[label][1], t.name, f"{label}_paragraph")
             if text:
                 return Found(text, f"{label}_paragraph", pages[label][0])
     if board_html:
-        text = first_paragraph(board_html, t.name)
+        text = first_paragraph(board_html, t.name, "board_page_paragraph")
         if text:
             return Found(text, "board_page_paragraph", board)
     return None
