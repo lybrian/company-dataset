@@ -82,20 +82,26 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
-company-dataset all
 ```
 
-You can also run one stage at a time: `download`, `build`, `validate`, `enrich`, `export`, `report`. A full run from scratch downloads about 4 GB (the Headcount Labs parquet files can be deleted once `boards.csv` has been extracted from them) and makes tens of thousands of polite, rate-limited requests, so it takes a few hours. After that, everything is cached and reruns only fetch what's new or what failed last time.
+The pipeline works over `data/store.db`, in four stages: ingest, identity, enrich, export. Every value it delivers has a row in `field_evidence` saying how it was obtained, and corrections are appended under a new run label rather than rewriting history. An export names the runs it merges.
 
-Useful options:
+```bash
+# Discovery: each harvest resumes after a stop and writes data/raw/<source>/tokens.csv
+python -m company_dataset.sources.wayback_cdx --raw data/raw
+python -m company_dataset.sources.commoncrawl_indexer --raw data/raw
+python -m company_dataset.sources.slug_prober --raw data/raw --db data/store.db --limit-per-vendor 5000
 
-- `--refresh` re-downloads the sources
-- `--max-age-days N` rechecks boards last validated more than N days ago
-- `--workers` and `--per-host-delay` control request concurrency and pacing
-- `--ats ATS1,ATS2` limits validation to specific ATSes (greenhouse, lever, ashby, smartrecruiters, breezy)
-- `--run-dir PATH` writes outputs to a fresh directory (fails if it exists)
-- `--smartrecruiters-max-concurrent N` and `--smartrecruiters-delay-seconds S` override rate limits
-- `--breezy-max-concurrent N` and `--breezy-delay-seconds S` override rate limits
+company-dataset ingest --db data/store.db --raw data/raw --only wayback_cdx_2026_11_03
+company-dataset enrich --db data/store.db --raw data/raw --run myrun --out data/runs/myrun --per-ats 100000 --only-undecided
+company-dataset repair descriptions-cached --db data/store.db --run mydesc --from-runs myrun
+company-dataset repair final-checks --db data/store.db --run myqa --from-runs myrun,mydesc
+company-dataset export --db data/store.db --runs myrun,mydesc,myqa --fresh-origin myqa --out data/exports/final_YYYY-MM-DD
+```
+
+The export writes `companies_verified.csv`, `companies_incomplete.csv`, `unresolved_boards.csv`, `evidence.csv`, `sources.json`, `qa_report.json` and `SHA256SUMS`. A company is verified when its board is live, its identity is confirmed, and `company_name`, `description`, `ats_system` and `ats_code` are all present. `linkedin_url`, `website_url` and `careersite_url` are filled only where verified. If a quality gate fails, only a report is written, next to the output folder.
+
+The first CSV-based line (`download`, `build`, `validate`, `enrich`, `export`, `report`) is deprecated. It still runs as `company-dataset-legacy`, and the sections below that mention `data/output` describe its files.
 
 ## Verification tiers
 
