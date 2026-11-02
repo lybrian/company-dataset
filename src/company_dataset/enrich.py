@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from company_dataset import careersite, reference as reference_mod, store, wikidata
-from company_dataset.config import resolve_rate_limits
+from company_dataset.config import CACHE_DIR_NAME, resolve_rate_limits
 from company_dataset.enrichment import (
     ENGLISH_HEADERS, board_from_validation, clean_description, content_website_candidates, english_variant_urls,
     fetch_greenhouse_content, fetch_page, greenhouse_content_url, is_auxiliary_board, is_english, is_test_board, landing_site,
@@ -282,7 +282,7 @@ def scan_reference(ctx: RunContext, live: list[dict]):
             domains.update(domain_chain(host_of(r["validation"]["website_url"])))
         for site, _ in vendor_websites(board_from_validation(Candidate(ats=r["board"]["ats"], codes=r["board"]["codes"] or [r["board"]["code"]]), r["validation"]), r["validation"], r.get("board_page")):
             domains.update(domain_chain(host_of(site)))
-    ref = reference_mod.build(ctx.raw / "bigpicture" / reference_mod.META.filename, domains, names)
+    ref = reference_mod.build(ctx.raw / "bigpicture" / reference_mod.META.filename, domains, names, cache_dir=ctx.raw.parent / CACHE_DIR_NAME)
     ctx.timed("reference_scan_1", t)
     ctx.emit("reference_1", domains=len(domains), names=len(names), matched_domains=len(ref.by_domain), matched_names=len(ref.by_name))
     return ref
@@ -369,7 +369,7 @@ def lookup_verified_domains(ctx: RunContext, chosen: dict) -> tuple:
     vdomains = set()
     for c in chosen.values():
         vdomains.update(domain_chain(host_of(c["site"])))
-    ref = reference_mod.build(ctx.raw / "bigpicture" / reference_mod.META.filename, vdomains, set())
+    ref = reference_mod.build(ctx.raw / "bigpicture" / reference_mod.META.filename, vdomains, set(), cache_dir=ctx.raw.parent / CACHE_DIR_NAME)
     ctx.timed("reference_scan_2", t)
     t = time.monotonic()
     wd = {}
