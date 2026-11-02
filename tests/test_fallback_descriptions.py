@@ -159,3 +159,13 @@ def test_run_records_evidence_and_is_resumable(conn):
     second = client()
     assert fd.run(conn, "fb", ["r", "fb"], second, "2026-11-03T00:00:01Z", workers=1)["targets"] == 0
     assert second.session.calls == []
+
+
+def test_targets_skip_open_boards_already_described_and_put_confirmed_first(conn):
+    open_done = add_board(conn, "greenhouse", "aaadone", "identity_unresolved", "Done Co")
+    conn.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,'description',?,'job_ad_about_section','verified','t','r')", (open_done, GOOD))
+    slogan = add_board(conn, "greenhouse", "aaaslogan", "identity_unresolved", "Slogan Co")
+    conn.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,'description',?,'board_page_meta','verified','t','r')", (slogan, "Making happier residents, one community at a time, all across the country."))
+    add_board(conn, "greenhouse", "bbbopen", "identity_unresolved", "Open Co")
+    add_board(conn, "greenhouse", "zzzconfirmed", "identity_confirmed", "Confirmed Co")
+    assert [t.code for t in fd.targets(conn, ["r"])] == ["zzzconfirmed", "aaaslogan", "bbbopen"]

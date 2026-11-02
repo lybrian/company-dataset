@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from html import unescape
@@ -264,17 +264,24 @@ def cascade(client: HttpClient, t: Target) -> Found | None:
 
 
 def targets(conn, runs: list[str]) -> list[Target]:
-    """Live target boards with a usable name and no description, confirmed or not: identity may be confirmed later."""
+    """Live target boards with a usable name and no description, confirmed ones first: only they can
+    be delivered now. Open boards are included because their identity may be confirmed later, and
+    their description evidence is read here since merged rows show none until then."""
     identities = _latest_identity_per_board(conn, runs)
-    out = []
+    marks = ",".join("?" * len(runs))
+    described = defaultdict(list)
+    for r in conn.execute(f"SELECT board_id, value, method FROM field_evidence WHERE field='description' AND status='verified' AND run IN ({marks})", runs):
+        described[r["board_id"]].append(r)
+    confirmed, others = [], []
     for r in decided_rows(conn, runs):
         if r["verification_status"] not in LIVE or r["description"]:
             continue
         name = r["company_name"] or identities[r["board_id"]]["name"]
-        if not name:
+        if not name or any(acceptable(e["method"], e["value"], name) for e in described[r["board_id"]]):
             continue
-        out.append(Target(r["board_id"], r["ats_system"], r["ats_code"], r["region"], name, r["website_url"] or None, int(r["jobs_count"] or 0)))
-    return out
+        target = Target(r["board_id"], r["ats_system"], r["ats_code"], r["region"], name, r["website_url"] or None, int(r["jobs_count"] or 0))
+        (confirmed if r["company_name"] else others).append(target)
+    return confirmed + others
 
 
 def run(conn, run_label: str, from_runs: list[str], client: HttpClient, now: str, workers: int = 12) -> dict:
