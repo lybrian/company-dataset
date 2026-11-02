@@ -146,3 +146,120 @@ def test_reverify_fetches_sites_never_checked_and_stores_the_page(conn):
     assert stats["fetched"] == 1
     assert json.loads(conn.execute("SELECT summary FROM pages WHERE url='https://fetchco.com'").fetchone()[0])["title"] == "FetchCo"
     assert identity_of(conn, bid, "rv") is not None
+
+
+GOOD = "Acme builds warehouse robots for regional distribution centers across the whole of Europe."
+
+
+def confirmed(c, ats, code, name, *, website=None, provider_description=None):
+    bid = board(c, ats, code, provider=name, description=provider_description, identity=CONFIRMED, name=name, basis="vendor+list")
+    c.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,'name',?,'m','verified','t','fullrun')", (bid, name))
+    c.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,'ats_system',?,'m','verified','t','fullrun')", (bid, ats))
+    c.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,'ats_code',?,'m','verified','t','fullrun')", (bid, code))
+    if website:
+        c.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,'website_url',?,'board_link+homepage_names_company','verified','t','fullrun')", (bid, website))
+    return bid
+
+
+def description_of(c, bid, run):
+    return c.execute("SELECT value, method FROM field_evidence WHERE board_id=? AND run=? AND field='description'", (bid, run)).fetchone()
+
+
+@pytest.mark.parametrize("text,accepted", [
+    (GOOD, True),
+    ("An Innovative and Tech-Powered Cross-Border Logistics Solutions company", True),
+    ("Job openings at Planned Parenthood of Southern New England, Inc.", False),
+    ("Grow your career in a supportive atmosphere and unlock your earning potential", False),
+    ("Descubre nuestros vacantes disponibles en Centro America para ti", False),
+    ("See all open roles at Acme Robotics and apply for the position today", False),
+    ("Browse current vacancies and talent opportunities across our many sites", False),
+])
+def test_job_copy_is_rejected_from_board_and_careers_pages(text, accepted):
+    assert repairs.usable_page_description(text) == (text if accepted else None)
+
+
+def test_cached_recovery_prefers_vendor_text_then_homepage_then_board_page(conn):
+    vendor = confirmed(conn, "greenhouse", "vendorco", "Vendor Co", provider_description=GOOD)
+    home = confirmed(conn, "ashby", "homeco", "Home Co", website="https://homeco.com")
+    page(conn, "https://homeco.com", title="Home Co", description=GOOD)
+    meta = confirmed(conn, "breezy", "metaco", "Meta Co")
+    page(conn, "https://metaco.breezy.hr", title="Meta Co", description=GOOD)
+    filler = confirmed(conn, "lever", "fillerco", "Filler Co")
+    page(conn, "https://jobs.lever.co/fillerco", title="Filler Co", description="Job openings at Filler Co, a company with many offices worldwide")
+    nothing = confirmed(conn, "lever", "emptyco", "Empty Co")
+
+    stats = repairs.recover_descriptions_cached(conn, "desc", ["fullrun"], "2026-11-03T00:00:00Z")
+
+    assert stats["missing"] == 5
+    assert stats["recovered"] == {"board_page_meta": 1, "homepage_meta": 1, "provider_description": 1}
+    assert description_of(conn, vendor, "desc")["method"] == "provider_description"
+    assert description_of(conn, home, "desc")["method"] == "homepage_meta"
+    assert description_of(conn, meta, "desc")["method"] == "board_page_meta"
+    assert description_of(conn, filler, "desc") is None
+    assert description_of(conn, nothing, "desc") is None
+
+
+def test_cached_recovery_leaves_boards_with_a_description_and_open_boards(conn):
+    has = confirmed(conn, "greenhouse", "hasco", "Has Co", provider_description="Different text about this company and all of the things that it does.")
+    conn.execute("INSERT INTO field_evidence(board_id, field, value, method, status, observed_at, run) VALUES (?,'description',?,'m','verified','t','fullrun')", (has, GOOD))
+    unresolved = board(conn, "greenhouse", "openco", provider="Open Co", description=GOOD, identity=UNRESOLVED, name="Open Co")
+    stats = repairs.recover_descriptions_cached(conn, "desc", ["fullrun"], "2026-11-03T00:00:00Z")
+    assert stats["missing"] == 0
+    assert description_of(conn, has, "desc") is None
+    assert description_of(conn, unresolved, "desc") is None
+
+
+def page_html(description):
+    return f"<html><head><title>Net Co</title><meta name='description' content='{description}'></head></html>"
+
+
+def network_client(script):
+    return HttpClient(session=FakeSession(script), sleep=lambda s: None, per_host_interval=0, max_attempts=1)
+
+
+def test_network_recovery_uses_the_homepage_first(conn):
+    bid = confirmed(conn, "greenhouse", "netco", "Net Co", website="https://netco.com")
+    client = network_client({"https://netco.com": FakeResponse(200, page_html(GOOD), "https://netco.com")})
+    stats = repairs.recover_descriptions_network(conn, "desc", ["fullrun"], client, "2026-11-03T00:00:00Z")
+    assert stats["recovered"] == {"homepage_meta": 1}
+    assert description_of(conn, bid, "desc")["value"].startswith("Acme builds")
+    assert client.session.calls == ["https://netco.com"]
+
+
+def test_network_recovery_falls_back_to_about_and_careers_with_the_job_filter(conn):
+    about = confirmed(conn, "greenhouse", "aboutco", "About Co", website="https://aboutco.com")
+    careers = confirmed(conn, "greenhouse", "careersco", "Careers Co", website="https://careersco.com")
+    jobs = confirmed(conn, "greenhouse", "jobsco", "Jobs Co", website="https://jobsco.com")
+    client = network_client({
+        "https://aboutco.com": FakeResponse(200, "<title>About Co</title>", "https://aboutco.com"),
+        "https://aboutco.com/about": FakeResponse(200, page_html(GOOD), "https://aboutco.com/about"),
+        "https://careersco.com": FakeResponse(200, "<title>Careers Co</title>", "https://careersco.com"),
+        "https://careersco.com/careers": FakeResponse(200, page_html(GOOD), "https://careersco.com/careers"),
+        "https://jobsco.com": FakeResponse(200, "<title>Jobs Co</title>", "https://jobsco.com"),
+        "https://jobsco.com/careers": FakeResponse(200, page_html("Browse all current job openings at Jobs Co in our offices across the world"), "https://jobsco.com/careers"),
+    })
+    stats = repairs.recover_descriptions_network(conn, "desc", ["fullrun"], client, "2026-11-03T00:00:00Z")
+    assert stats["recovered"] == {"about_page_meta": 1, "careers_page_meta": 1}
+    assert description_of(conn, about, "desc")["method"] == "about_page_meta"
+    assert description_of(conn, careers, "desc")["method"] == "careers_page_meta"
+    assert description_of(conn, jobs, "desc") is None
+
+
+def test_network_recovery_rejects_a_page_that_redirects_to_another_site(conn):
+    bid = confirmed(conn, "greenhouse", "movedco", "Moved Co", website="https://movedco.com")
+    client = network_client({"https://movedco.com": FakeResponse(200, page_html(GOOD), "https://otherbrand.example")})
+    assert repairs.recover_descriptions_network(conn, "desc", ["fullrun"], client, "2026-11-03T00:00:00Z")["recovered"] == {}
+    assert description_of(conn, bid, "desc") is None
+
+
+def test_select_open_boards_covers_unresolved_and_confirmed_without_website_or_description(conn):
+    from company_dataset.repairs import open_board_ids
+
+    unresolved = board(conn, "lever", "openco", provider="Open Co", identity=UNRESOLVED, name="Open Co")
+    bare = confirmed(conn, "lever", "bareco", "Bare Co")
+    with_site = confirmed(conn, "lever", "siteco", "Site Co", website="https://siteco.com")
+    dead = board(conn, "lever", "goneco", outcome="dead_removed", jobs=None, identity=UNRESOLVED, name="Gone Co")
+    other = board(conn, "workable", "workco", identity=UNRESOLVED, name="Work Co")
+    assert open_board_ids(conn, ["fullrun"]) == {unresolved, bare}
+    assert with_site not in open_board_ids(conn, ["fullrun"])
+    assert dead not in open_board_ids(conn, ["fullrun"]) and other not in open_board_ids(conn, ["fullrun"])

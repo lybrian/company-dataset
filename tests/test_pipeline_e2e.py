@@ -99,3 +99,18 @@ def test_refuses_to_overwrite_an_existing_run_directory(world):
     run(world)
     with pytest.raises(SystemExit):
         pilot_main(["--db", str(world / "s.db"), "--raw", str(world / "raw"), "--run", "t1", "--out", str(world / "run")])
+
+
+def test_run_can_be_limited_to_listed_boards_or_undecided_ones(world):
+    ids = world / "ids.txt"
+    conn = store.connect(world / "s.db")
+    acme = conn.execute("SELECT id FROM boards WHERE code='acmerobots'").fetchone()[0]
+    conn.close()
+    ids.write_text(f"{acme}\n")
+    base = ["--db", str(world / "s.db"), "--raw", str(world / "raw"), "--per-ats", "10", "--workers", "2"]
+    assert pilot_main(base + ["--run", "listed", "--out", str(world / "listed"), "--board-ids", str(ids)]) == 0
+    with open(world / "listed" / "results.csv", newline="", encoding="utf-8") as fh:
+        assert [r["ats_code"] for r in csv.DictReader(fh)] == ["acmerobots"]
+    assert pilot_main(base + ["--run", "rest", "--out", str(world / "rest"), "--only-undecided"]) == 0
+    with open(world / "rest" / "results.csv", newline="", encoding="utf-8") as fh:
+        assert sorted(r["ats_code"] for r in csv.DictReader(fh)) == ["GhostCo", "goneco", "soloco"]

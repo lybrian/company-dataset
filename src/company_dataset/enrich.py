@@ -38,7 +38,7 @@ from company_dataset.identity import (
 )
 from company_dataset.ingest import interleave, load_boards, stratified_sample
 from company_dataset.models import Candidate, utc_now
-from company_dataset.normalize import GREENHOUSE, clean_website, host_of, validation_endpoint
+from company_dataset.normalize import CORE_ATS, GREENHOUSE, clean_website, host_of, validation_endpoint
 from company_dataset.platforms import ICIMS, WORKDAY
 from company_dataset.reference import domain_chain
 from company_dataset.validate import AtsRateLimiter, BoardValidator
@@ -432,6 +432,14 @@ def select_boards(conn, args, emit) -> list[dict]:
     if args.only_source:
         boards = [b for b in boards if b["sources"] == [args.only_source]]
         emit("only_source", source=args.only_source, boards=len(boards))
+    if args.only_undecided:
+        known = {r[0] for r in conn.execute("SELECT DISTINCT board_id FROM identities")}
+        boards = [b for b in boards if b["id"] not in known and b["ats"] in CORE_ATS]
+        emit("only_undecided", boards=len(boards))
+    if args.board_ids:
+        wanted = {int(line) for line in Path(args.board_ids).read_text().split()}
+        boards = [b for b in boards if b["id"] in wanted]
+        emit("board_ids", boards=len(boards))
     return boards
 
 
@@ -455,6 +463,8 @@ def main(argv=None) -> int:
     p.add_argument("--ats", default="")
     p.add_argument("--exclude-run", action="append", default=[], help="leave out boards already sampled by this run")
     p.add_argument("--only-source", default="", help="sample only boards that no other source lists (new discoveries)")
+    p.add_argument("--only-undecided", action="store_true", help="only target-ATS boards that have no identity decision yet")
+    p.add_argument("--board-ids", default="", help="file of board ids, whitespace separated: work on these boards only")
     p.add_argument("--require-frozen", default="", help="methodology freeze file; refuse to run if the code differs")
     a = p.parse_args(argv)
     if a.require_frozen:

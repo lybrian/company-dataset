@@ -6,6 +6,8 @@ picks a run up by naming it. Each step commits as one transaction.
     python -m company_dataset.repairs sr-existence --db data/store.db --run sr_existence_2026-11-03
     python -m company_dataset.repairs reresolve --db data/store.db --run identity_fix_2026-11-03 --from-runs fullrun,disc1,sr_fix_test
     python -m company_dataset.repairs reverify-recovery --db data/store.db --run recovery_reverify_2026-11-03 --from-run recovery1
+    python -m company_dataset.repairs descriptions-cached --db data/store.db --run desc_cached_2026-11-03 --from-runs fullrun,...
+    python -m company_dataset.repairs descriptions-network --db data/store.db --run desc_network_2026-11-03 --from-runs fullrun,...
 """
 from __future__ import annotations
 
@@ -17,16 +19,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 from company_dataset import store
 from company_dataset.enrichment import (
-    board_from_validation, clean_description, fetch_page, is_english, landing_site, linkedin_url,
+    board_from_validation, clean_description, english_variant_urls, fetch_page, is_english, landing_site, linkedin_url,
 )
 from company_dataset.http import HttpClient
-from company_dataset.enrich import board_ownership, official_landing, verify_homepage, website_supported
+from company_dataset.enrich import NON_MAIN_LABELS, board_ownership, official_landing, verify_homepage, website_supported
+from company_dataset.export import decided_rows
 from company_dataset.identity import (
     CONFIRMED, careers_branded_domain, domain_compatible, linkedin_compatible, name_claims, registrable_domain, resolve_identity,
 )
 from company_dataset.ingest import load_boards
 from company_dataset.models import Candidate, utc_now
-from company_dataset.normalize import CORE_ATS, SMARTRECRUITERS, canonical_board_url, clean_website, normalize_linkedin
+from company_dataset.normalize import CORE_ATS, SMARTRECRUITERS, canonical_board_url, clean_website, host_of, normalize_linkedin
 from company_dataset.validate import SR_NO_SUCH_COMPANY, smartrecruiters_generic_page
 from company_dataset.verification import INVALID_IDENTIFIER, LIVE, VERIFIED_LIVE_ZERO_JOBS
 
@@ -207,9 +210,138 @@ def _carry_linkedin(conn, run, board_id, from_run, name, website, page, now, sit
             return
 
 
+# ---------------------------------------------------------------------------
+# Description recovery
+# ---------------------------------------------------------------------------
+
+# Hosted boards and careers pages describe jobs far more often than the company ("Job openings at X").
+_JOB_COPY_RE = re.compile(
+    r"\b(jobs?|careers?|openings?|vacanc\w*|vacantes?|positions?|hiring|hire|apply|applicants?|recruit\w*|roles?|opportunit\w*|talent|join|work (with|for|at)|employment|empleo)\b",
+    re.I)
+_FALLBACK_PATHS = (("/about", "about_page_meta"), ("/careers", "careers_page_meta"))
+
+
+def usable_page_description(text) -> str | None:
+    """A company description from a page that is not the company's homepage, or None."""
+    d = clean_description(text)
+    return d if d and is_english(d) and not _JOB_COPY_RE.search(d) else None
+
+
+def _usable_homepage_description(text) -> str | None:
+    d = clean_description(text)
+    return d if d and is_english(d) else None
+
+
+def _missing_descriptions(conn, runs: list[str]) -> list[dict]:
+    return [r for r in decided_rows(conn, runs) if r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE and not r["description"]]
+
+
+def _homepage_url(conn, row: dict) -> str | None:
+    return clean_website(row["website_url"]) if row["website_url"] else None
+
+
+def _on_main_host(page: dict | None, site: str) -> bool:
+    """The page answered from the site itself, not a redirect to another company or a careers host."""
+    if not page or page.get("status") != "ok":
+        return False
+    final = host_of(page.get("final_url") or site)
+    return registrable_domain(final) == registrable_domain(site) and final.split(".")[0] not in NON_MAIN_LABELS
+
+
+def open_board_ids(conn, runs: list[str]) -> set[int]:
+    """Live target boards a fresh enrichment could still improve: no confirmed identity, or
+    confirmed with neither a website nor a description to build on."""
+    out = set()
+    for r in decided_rows(conn, runs):
+        if r["verification_status"] not in LIVE:
+            continue
+        if r["identity_status"] in ("identity_unresolved", "identity_mismatch"):
+            out.add(r["board_id"])
+        elif r["identity_status"] == CONFIRMED and not r["website_url"] and not r["description"]:
+            out.add(r["board_id"])
+    return out
+
+
+def recover_descriptions_cached(conn, run: str, from_runs: list[str], now: str) -> dict:
+    """From what is already stored, most trustworthy first: the vendor's own text, the company's homepage, its hosted board."""
+    missing = _missing_descriptions(conn, from_runs)
+    recovered = Counter()
+    with conn:
+        for row in missing:
+            bid = row["board_id"]
+            found = None
+            for r in conn.execute("SELECT provider_description, endpoint FROM verifications WHERE board_id=? AND provider_description IS NOT NULL ORDER BY checked_at DESC", (bid,)).fetchall():
+                d = _usable_homepage_description(r["provider_description"])
+                if d:
+                    found = (d, "provider_description", r["endpoint"])
+                    break
+            site = _homepage_url(conn, row)
+            if not found and site:
+                page = store.page(conn, site)
+                d = _usable_homepage_description(page.get("description")) if _on_main_host(page, site) else None
+                if d:
+                    found = (d, "homepage_meta", site)
+            if not found:
+                url = canonical_board_url(row["ats_system"], row["ats_code"], row["region"] or None)
+                page = store.page(conn, url)
+                d = usable_page_description(page.get("description")) if page and page.get("status") == "ok" else None
+                if d:
+                    found = (d, "board_page_meta", url)
+            if found:
+                _record_evidence(conn, run, bid, "description", found[0], found[1], found[2], found[0][:200], now)
+                recovered[found[1]] += 1
+    return {"missing": len(missing), "recovered": dict(sorted(recovered.items())), "still_missing": len(missing) - sum(recovered.values())}
+
+
+def _fetch_description(client: HttpClient, site: str) -> tuple[str, str, str, dict] | None:
+    """(description, method, url, page) from the live site: homepage, its English pages, then about and careers."""
+    home = fetch_page(client, site)
+    if _on_main_host(home, site):
+        d = _usable_homepage_description(home.get("description"))
+        if d:
+            return d, "homepage_meta", site, home
+        if clean_description(home.get("description")):
+            for url in english_variant_urls(site):
+                page = fetch_page(client, url)
+                if _on_main_host(page, site):
+                    d = _usable_homepage_description(page.get("description"))
+                    if d:
+                        return d, "homepage_meta_english_page", url, page
+    elif not home or home.get("status") != "ok":
+        return None
+    for path, method in _FALLBACK_PATHS:
+        url = site.rstrip("/") + path
+        page = fetch_page(client, url)
+        if page.get("status") == "ok" and registrable_domain(host_of(page.get("final_url") or url)) == registrable_domain(site):
+            d = usable_page_description(page.get("description"))
+            if d:
+                return d, method, url, page
+    return None
+
+
+def recover_descriptions_network(conn, run: str, from_runs: list[str], client: HttpClient, now: str, workers: int = 12) -> dict:
+    """Fetch the sites of confirmed live companies with a verified website and no description.
+    Threads only fetch; the store is written on this thread, in one transaction."""
+    missing = [r for r in _missing_descriptions(conn, from_runs) if r["website_url"]]
+    sites = sorted({clean_website(r["website_url"]) for r in missing} - {None})
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        found = dict(zip(sites, ex.map(lambda s: _fetch_description(client, s), sites)))
+    recovered = Counter()
+    with conn:
+        for row in missing:
+            hit = found.get(clean_website(row["website_url"]))
+            if hit:
+                text, method, url, page = hit
+                store.put_page(conn, url, page)
+                _record_evidence(conn, run, row["board_id"], "description", text, method, url, text[:200], now)
+                recovered[method] += 1
+    return {"missing_with_website": len(missing), "sites_fetched": len(sites), "recovered": dict(sorted(recovered.items())),
+            "still_missing": len(missing) - sum(recovered.values())}
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="company_dataset.repairs")
-    p.add_argument("step", choices=["sr-existence", "reresolve", "reverify-recovery"])
+    p.add_argument("step", choices=["sr-existence", "reresolve", "reverify-recovery", "descriptions-cached", "descriptions-network"])
     p.add_argument("--db", required=True)
     p.add_argument("--run", required=True)
     p.add_argument("--from-runs", default="", help="reresolve: comma-separated runs whose newest decision per board is the starting point")
@@ -221,6 +353,10 @@ def main(argv=None) -> int:
         out = backfill_smartrecruiters_existence(conn, a.run, utc_now())
     elif a.step == "reresolve":
         out = reresolve_identities(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
+    elif a.step == "descriptions-cached":
+        out = recover_descriptions_cached(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
+    elif a.step == "descriptions-network":
+        out = recover_descriptions_network(conn, a.run, [r for r in a.from_runs.split(",") if r], HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2), utc_now())
     else:
         out = reverify_recovery(conn, a.run, a.from_run, HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2), utc_now(), refetch=a.refetch)
     print(json.dumps(out, indent=1))
