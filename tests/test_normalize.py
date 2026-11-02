@@ -1,4 +1,8 @@
+import pytest
+
 from company_dataset.normalize import (
+    clean_website,
+    normalize_linkedin,
     ASHBY,
     BREEZY,
     GREENHOUSE,
@@ -230,3 +234,29 @@ def test_greenhouse_eu_hosts_parse_with_region():
     assert canonical_board_url("greenhouse", "jdsports", "eu") == "https://job-boards.eu.greenhouse.io/jdsports"
     # One API serves both instances.
     assert canonical_api_url("greenhouse", "jdsports", "eu") == "https://boards-api.greenhouse.io/v1/boards/jdsports/jobs"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("https://www.linkedin.com/company/acme", "https://www.linkedin.com/company/acme"),
+    ("https://www.linkedin.com/company/acme/", "https://www.linkedin.com/company/acme"),
+    ("https://www.linkedin.com/company/acme///", "https://www.linkedin.com/company/acme"),
+    ("http://linkedin.com/company/Acme?trk=x#about", "https://www.linkedin.com/company/Acme"),
+    ("linkedin.com/company/acme/", "https://www.linkedin.com/company/acme"),
+    ("https://ca.linkedin.com/company/acme", "https://www.linkedin.com/company/acme"),
+    ("https://www.linkedin.com/company/acme/jobs", None),
+    ("https://www.linkedin.com/", None),
+    ("https://notlinkedin.com/company/acme", None),
+    ("", None),
+    (None, None),
+])
+def test_normalize_linkedin(raw, expected):
+    assert normalize_linkedin(raw) == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("buildops.com", "https://buildops.com"),
+    ("https://buildops.com/", "https://buildops.com"),
+    ("HTTP://Example.COM/path", "http://example.com"),
+])
+def test_clean_website_adds_a_missing_scheme(raw, expected):
+    assert clean_website(raw) == expected

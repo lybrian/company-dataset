@@ -253,6 +253,26 @@ def is_non_company_host(host: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in _NON_COMPANY_HOSTS)
 
 
+def normalize_linkedin(url) -> str | None:
+    """https://www.linkedin.com/<kind>/<handle> with no trailing slash, query or fragment, or None if it is not one."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    text = url.strip()
+    if "://" not in text:
+        text = "https://" + text
+    try:
+        parts = urlsplit(text)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return None
+    if host != "linkedin.com" and not host.endswith(".linkedin.com"):
+        return None
+    segments = [s for s in parts.path.split("/") if s]
+    if len(segments) != 2:
+        return None
+    return f"https://www.linkedin.com/{segments[0]}/{segments[1]}"
+
+
 def clean_website(url) -> str | None:
     """Normalize a website to scheme://host, or None if it cannot be a company site.
 
