@@ -22,7 +22,7 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def import_sources(conn: sqlite3.Connection, raw_dir: Path, now: str, modules=SOURCES) -> dict:
+def import_sources(conn: sqlite3.Connection, raw_dir: Path, now: str, modules=SOURCES, only: set[str] | None = None) -> dict:
     """Every adapter output row (records and rejects) becomes one source_rows row, in order.
 
     A source already imported from the same file checksum is skipped; a different checksum
@@ -31,6 +31,8 @@ def import_sources(conn: sqlite3.Connection, raw_dir: Path, now: str, modules=SO
     report = {}
     for mod in modules:
         meta = mod.META
+        if only is not None and meta.name not in only:
+            continue
         path = Path(raw_dir) / meta.name / meta.filename
         if not path.exists():
             report[meta.name] = {"status": "file_missing", "path": str(path)}
@@ -210,10 +212,11 @@ def main(argv=None) -> int:
     p.add_argument("--cache", action="append", default=[], help="ORIGIN=path to a legacy validation.json")
     p.add_argument("--pages", action="append", default=[])
     p.add_argument("--qa", action="append", default=[], help="ORIGIN=path to a qa.py jsonl")
+    p.add_argument("--only", default="", help="comma-separated source names: import just these")
     p.add_argument("--report", help="write the import report JSON here")
     a = p.parse_args(argv)
     conn = store.connect(a.db)
-    report = {"started_at": utc_now(), "sources": import_sources(conn, Path(a.raw), utc_now())}
+    report = {"started_at": utc_now(), "sources": import_sources(conn, Path(a.raw), utc_now(), only={n for n in a.only.split(",") if n} or None)}
     report["caches"] = {}
     for spec in a.cache:
         origin, _, path = spec.partition("=")
