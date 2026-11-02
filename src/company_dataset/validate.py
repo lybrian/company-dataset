@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from company_dataset.build import load_candidates
 from company_dataset.config import resolve_rate_limits
@@ -99,6 +100,16 @@ def _breezy_page_identity(page, cand: Candidate) -> str | None:
             if candidate and names_match(text, candidate):
                 return text
     return None
+
+
+SR_NO_SUCH_COMPANY = "smartrecruiters_no_such_company"
+_SR_GENERIC_HOST = "jobs.smartrecruiters.com"
+
+
+def smartrecruiters_generic_page(final_url: str) -> bool:
+    """The root of SmartRecruiters' job search, where careers pages of unknown companies land."""
+    parts = urlsplit(final_url or "")
+    return parts.hostname == _SR_GENERIC_HOST and not parts.path.strip("/")
 
 
 class BoardValidator:
@@ -265,6 +276,22 @@ class BoardValidator:
             )
         return BoardValidation(ats=cand.ats, code=cand.code, status=INVALID, http_status=404, error="board_not_found", checked_at=now)
 
+    def _smartrecruiters_zero_jobs(self, cand: Candidate, code: str, now: str) -> BoardValidation:
+        """The postings API answers 200 totalFound=0 for any identifier, so only the careers page
+        can show the company exists: an unknown one is sent to the generic job search page."""
+        try:
+            with self.rate_limiter.slot(SMARTRECRUITERS):
+                page = self.client.get(canonical_board_url(SMARTRECRUITERS, code))
+        except RequestError as exc:
+            return BoardValidation(ats=cand.ats, code=cand.code, status=UNRESOLVED, jobs_count=0, error=f"request_error: {exc}", checked_at=now)
+        if page.status == 404:
+            return BoardValidation(ats=cand.ats, code=cand.code, status=INVALID, http_status=404, error="board_not_found", checked_at=now)
+        if page.status != 200:
+            return BoardValidation(ats=cand.ats, code=cand.code, status=UNRESOLVED, http_status=page.status, jobs_count=0, error=f"http_{page.status}", checked_at=now)
+        if smartrecruiters_generic_page(page.url):
+            return BoardValidation(ats=cand.ats, code=cand.code, status=INVALID, http_status=200, error=SR_NO_SUCH_COMPANY, checked_at=now)
+        return BoardValidation(ats=cand.ats, code=cand.code, status="valid", http_status=200, jobs_count=0, error="total_found_zero", code_validated=code, checked_at=now)
+
     def _validate_smartrecruiters(self, cand: Candidate) -> BoardValidation:
         now = utc_now()
         codes = list(dict.fromkeys(cand.codes))
@@ -295,7 +322,7 @@ class BoardValidator:
             ):
                 return BoardValidation(ats=cand.ats, code=cand.code, status=UNRESOLVED, http_status=200, error="unexpected_schema", checked_at=now)
             if total_found == 0:
-                return BoardValidation(ats=cand.ats, code=cand.code, status="valid", http_status=200, jobs_count=0, error="total_found_zero", checked_at=now)
+                return self._smartrecruiters_zero_jobs(cand, code, now)
             if not content:
                 return BoardValidation(ats=cand.ats, code=cand.code, status=UNRESOLVED, http_status=200, error="unexpected_schema", checked_at=now)
             identifiers = []

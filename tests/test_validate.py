@@ -10,7 +10,8 @@ from company_dataset.config import resolve_dirs
 from company_dataset.http import HttpClient
 from company_dataset.models import Candidate
 from company_dataset.normalize import BREEZY, SMARTRECRUITERS
-from company_dataset.validate import AtsRateLimiter, BoardValidator, run_validate
+from company_dataset.validate import SR_NO_SUCH_COMPANY, AtsRateLimiter, BoardValidator, run_validate, smartrecruiters_generic_page
+from company_dataset.verification import INVALID_IDENTIFIER, classify
 
 GH_JOBS_URL = "https://boards-api.greenhouse.io/v1/boards/acme/jobs"
 GH_INFO_URL = "https://boards-api.greenhouse.io/v1/boards/acme"
@@ -18,6 +19,8 @@ LEVER_URL = "https://api.lever.co/v0/postings/acme?mode=json"
 LEVER_EU_URL = "https://api.eu.lever.co/v0/postings/acme?mode=json"
 ASHBY_URL = "https://api.ashbyhq.com/posting-api/job-board/acme"
 SR_URL = "https://api.smartrecruiters.com/v1/companies/AbbVie/postings?limit=100"
+SR_PAGE = "https://careers.smartrecruiters.com/AbbVie"
+SR_GENERIC = "https://jobs.smartrecruiters.com"
 BREEZY_URL = "https://testbox.breezy.hr/json"
 BREEZY_PAGE = "https://testbox.breezy.hr"
 
@@ -281,14 +284,51 @@ def test_smartrecruiters_valid_uses_total_found_and_company_identifier():
     assert session.calls == [SR_URL]
 
 
-def test_smartrecruiters_total_found_zero_is_verified_live_zero_jobs():
-    payload = {"offset": 0, "limit": 100, "totalFound": 0, "content": []}
-    client, _ = make_client({SR_URL: FakeResponse(200, json.dumps(payload))})
+SR_ZERO = {"offset": 0, "limit": 100, "totalFound": 0, "content": []}
+
+
+def test_smartrecruiters_zero_jobs_with_own_careers_page_is_live():
+    client, _ = make_client({SR_URL: FakeResponse(200, json.dumps(SR_ZERO)), SR_PAGE: FakeResponse(200, "<title>Careers at AbbVie</title>", SR_PAGE)})
     result = BoardValidator(client).validate_one(cand("smartrecruiters", "AbbVie"))
     assert result.status == "valid"
     assert result.error == "total_found_zero"
     assert result.jobs_count == 0
     assert result.http_status == 200
+
+
+def test_smartrecruiters_zero_jobs_redirecting_to_a_company_site_is_live():
+    # A company can send its careers page to its own site, which only an existing account can configure.
+    client, _ = make_client({SR_URL: FakeResponse(200, json.dumps(SR_ZERO)), SR_PAGE: FakeResponse(200, "", "https://careers.abbvie.com/en")})
+    assert BoardValidator(client).validate_one(cand("smartrecruiters", "AbbVie")).status == "valid"
+
+
+def test_smartrecruiters_zero_jobs_on_generic_search_page_does_not_exist():
+    # The postings API answers 200 totalFound=0 for any identifier, invented ones included.
+    client, _ = make_client({SR_URL: FakeResponse(200, json.dumps(SR_ZERO)), SR_PAGE: FakeResponse(200, "<title>SmartRecruiters Job Search</title>", SR_GENERIC + "/")})
+    result = BoardValidator(client).validate_one(cand("smartrecruiters", "AbbVie"))
+    assert result.status == "invalid"
+    assert result.error == SR_NO_SUCH_COMPANY
+    assert classify(result.status, result.http_status, result.error, result.jobs_count) == INVALID_IDENTIFIER
+
+
+def test_smartrecruiters_zero_jobs_with_unreachable_page_is_not_live():
+    client, _ = make_client({SR_URL: FakeResponse(200, json.dumps(SR_ZERO)), SR_PAGE: [FakeResponse(503, "")] * 3})
+    result = BoardValidator(client).validate_one(cand("smartrecruiters", "AbbVie"))
+    assert result.status == "unresolved"
+    assert result.http_status == 503
+
+
+@pytest.mark.parametrize("url,generic", [
+    ("https://jobs.smartrecruiters.com", True),
+    ("https://jobs.smartrecruiters.com/", True),
+    ("https://careers.smartrecruiters.com/AbbVie", False),
+    ("https://careers.smartrecruiters.com/DeloitteAT/deloitte-jobs", False),
+    ("https://jobs.smartrecruiters.com/AbbVie/123-engineer", False),
+    ("https://careers.accor.com/", False),
+    ("", False),
+])
+def test_smartrecruiters_generic_page(url, generic):
+    assert smartrecruiters_generic_page(url) is generic
 
 
 def test_smartrecruiters_missing_company_identifier_is_unresolved():
@@ -599,6 +639,7 @@ def test_run_validate_filters_ats_and_records_unresolved_reasons(tmp_path):
         BREEZY_URL: FakeResponse(200, "[]"),
         BREEZY_PAGE: FakeResponse(200, "<html><head><title>Breezy HR</title></head></html>"),
         SR_URL: FakeResponse(200, json.dumps({"totalFound": 0, "content": []})),
+        SR_PAGE: FakeResponse(200, "<title>Careers at AbbVie</title>", SR_PAGE),
     })
     stats = run_validate(
         dirs,

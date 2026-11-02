@@ -32,7 +32,7 @@ def classify(status: str | None, http_status: int | None, error: str | None, job
     if status == "valid":
         return VERIFIED_LIVE if (jobs_count or 0) > 0 else VERIFIED_LIVE_ZERO_JOBS
     if status == "invalid":
-        if http_status in (400, 422):
+        if http_status in (400, 422) or error == "smartrecruiters_no_such_company":
             return INVALID_IDENTIFIER
         return DEAD_REMOVED
     if error == "company_identifier_mismatch":
