@@ -26,10 +26,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from company_dataset import store
-from company_dataset.enrich import website_supported
+from company_dataset.enrich import REFERENCE_NAME_BASIS, website_supported
 from company_dataset.enrichment import clean_description, clean_name, is_english, is_test_board
 from company_dataset.identity import CONFIRMED, _fold, careers_branded_domain, cluster_companies, linkedin_compatible
-from company_dataset.normalize import CORE_ATS, canonical_board_url, clean_website, host_of, normalize_linkedin
+from company_dataset.normalize import CORE_ATS, SMARTRECRUITERS, canonical_board_url, clean_website, host_of, normalize_linkedin
 from company_dataset.sources import SOURCES
 from company_dataset.validate import smartrecruiters_generic_page
 from company_dataset.verification import LIVE
@@ -198,6 +198,7 @@ UNRESOLVED_COLUMNS = ["board_id", "ats_system", "ats_code", "region", "sources",
                       "verification_status", "verification_date", "endpoint_public_jobs"]
 EVIDENCE_COLUMNS = ["board_id", "ats_system", "ats_code", "field", "status", "value", "method", "evidence_url", "evidence_text", "observed_at", "run"]
 FRESH_CHECK_MISSING = "fresh_check_not_passed"
+SR_NAME_GUESS = "smartrecruiters_zero_jobs_name_match_only"
 _URL_FIELDS = ("website_url", "careersite_url")
 _PLACEHOLDER_RE = re.compile(r"\b(lorem ipsum|placeholder|coming soon|under construction|example company|your company|test company)\b", re.I)
 _LEGAL_WORDS = frozenset("inc incorporated llc llp lp ltd limited corp corporation co company plc pbc gmbh ag ab as asa oy oyj bv nv sa sas sarl srl spa kg ug se pty pte the and".split())
@@ -258,6 +259,13 @@ def _usable_description(text: str) -> bool:
     return bool(clean_description(text)) and is_english(text) and not _PLACEHOLDER_RE.search(text)
 
 
+def _dormant_name_guess(row: dict) -> bool:
+    """SmartRecruiters serves a page for any signed-up identifier, jobs or not. With no jobs, a website
+    found only by matching the name to a domain ties that page to nobody: "cdc" is not the CDC."""
+    return (row["ats_system"] == SMARTRECRUITERS and not int(row["jobs_count"] or 0)
+            and row["website_method"].startswith(REFERENCE_NAME_BASIS))
+
+
 def decided_rows(conn, runs: list[str]) -> list[dict]:
     """One merged row per board: newest identity run + per-field newest verified evidence across all runs."""
     identities = _latest_identity_per_board(conn, runs)
@@ -299,6 +307,10 @@ def decided_rows(conn, runs: list[str]) -> list[dict]:
                     row["_country_method"] = ev["method"]
                 if field == "website_url":
                     website = ev
+        if _dormant_name_guess(row):
+            row.update(identity_status="identity_unresolved", identity_basis=SR_NAME_GUESS, company_name="", description="", linkedin_url="", website_url="", careersite_url="",
+                       website_method="", linkedin_method="", description_method="")
+            website = None
         if website and website_rule_failure(conn, website, ident["name"] or None):
             drop_website(row)
         row["website_url"] = _normalize_url("website_url", row["website_url"])

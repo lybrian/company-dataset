@@ -38,7 +38,7 @@ from company_dataset.identity import (
 )
 from company_dataset.ingest import interleave, load_boards, stratified_sample
 from company_dataset.models import Candidate, utc_now
-from company_dataset.normalize import CORE_ATS, GREENHOUSE, clean_website, host_of, validation_endpoint
+from company_dataset.normalize import CORE_ATS, GREENHOUSE, SMARTRECRUITERS, clean_website, host_of, validation_endpoint
 from company_dataset.platforms import ICIMS, WORKDAY
 from company_dataset.reference import domain_chain
 from company_dataset.validate import AtsRateLimiter, BoardValidator
@@ -49,6 +49,7 @@ from company_dataset.verification import LIVE, classify
 # homepage reached through them is independent evidence of who runs the board.
 BOARD_ATTESTED = ("careersite_redirect_domain", "board_job_ad_link", "vendor_job_org_url", "ashby_public_website", "lever_home_page_link", "greenhouse_job_url_origin", "greenhouse_job_ads",
                   "jsonld_organization_url", "board_link_home_text", "board_link")
+REFERENCE_NAME_BASIS = "reference_name_slug_domain"
 USA_UK_CA = {"US": "US", "GB": "UK", "UK": "UK", "CA": "CA"}
 
 
@@ -130,7 +131,7 @@ def website_candidates(res: dict, ref) -> list[tuple[str, str]]:
             out.append((site, "greenhouse_job_ads"))
     for name in claim_names(res):
         for site in ref.name_candidates(name, b["code"]):
-            out.append((site, "reference_name_slug_domain"))
+            out.append((site, REFERENCE_NAME_BASIS))
     final = (res.get("board_page") or {}).get("final_url") or ""
     if final and host_of(final) != host_of(res.get("careersite_url") or "") and clean_website(final):
         # The ATS sends visitors to the company's own domain: that domain is board-attested.
@@ -310,6 +311,14 @@ def fetch_homepages(ctx: RunContext, live: list[dict], ref) -> tuple[dict, dict]
     return plan, pages
 
 
+def homepage_is_independent(basis: str, evidence: str, ats: str, jobs) -> bool:
+    """Does the homepage say something about this board beyond repeating its name? A name-matched
+    site can't for a SmartRecruiters board with no jobs: any identifier can have a page there."""
+    if basis in BOARD_ATTESTED or evidence.startswith("links_to_board"):
+        return True
+    return basis == REFERENCE_NAME_BASIS and not (ats == SMARTRECRUITERS and not jobs)
+
+
 def choose_websites(live: list[dict], plan: dict, pages: dict) -> dict:
     """Each board's first candidate whose homepage checks out."""
     chosen = {}
@@ -335,7 +344,7 @@ def choose_websites(live: list[dict], plan: dict, pages: dict) -> dict:
             elif careers_branded_domain(landed, nm) or not clean_website(landed):
                 continue
             chosen[b["id"]] = {"site": landed, "basis": basis, "page": page, "evidence": ev, "url": site, "landed_on_careers": on_careers,
-                               "independent": basis in BOARD_ATTESTED or basis == "reference_name_slug_domain" or ev.startswith("links_to_board"),
+                               "independent": homepage_is_independent(basis, ev, b["ats"], r["validation"].get("jobs_count")),
                                "board_ownership": owns}
             break
     return chosen

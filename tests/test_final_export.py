@@ -211,3 +211,15 @@ def test_a_row_missing_a_mandatory_field_is_not_also_reported_as_unchecked(conn,
     seed(conn, "greenhouse", "acme", "Acme", description=None, fresh=False)
     run(conn, tmp_path / "out")
     assert read(tmp_path / "out" / "companies_incomplete.csv")[0]["missing_fields"] == "description"
+
+
+def test_dormant_smartrecruiters_board_matched_only_by_name_is_not_a_confirmed_company(conn, tmp_path):
+    # SmartRecruiters serves a page for any signed-up identifier: "cdc" plus cdc.gov calling itself CDC proves nothing.
+    seed(conn, "smartrecruiters", "cdc", "cdc", outcome="verified_live_zero_jobs", jobs=0, website="https://cdc.gov", website_method="reference_name_slug_domain+homepage_names_company")
+    seed(conn, "smartrecruiters", "linked", "Linked Co", outcome="verified_live_zero_jobs", jobs=0, website="https://linked.com", website_method="board_link_home_text+homepage_names_company")
+    seed(conn, "smartrecruiters", "busy", "Busy Co", website="https://busy.com", website_method="reference_name_slug_domain+homepage_names_company")
+    seed(conn, "greenhouse", "other", "Other Co", outcome="verified_live_zero_jobs", jobs=0, website="https://other.com", website_method="reference_name_slug_domain+homepage_names_company")
+    run(conn, tmp_path / "out")
+    assert sorted(r["ats_code"] for r in read(tmp_path / "out" / "companies_verified.csv")) == ["busy", "linked", "other"]
+    row = read(tmp_path / "out" / "unresolved_boards.csv")[0]
+    assert (row["ats_code"], row["identity_basis"]) == ("cdc", export.SR_NAME_GUESS)

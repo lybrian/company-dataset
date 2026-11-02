@@ -114,3 +114,14 @@ def test_run_can_be_limited_to_listed_boards_or_undecided_ones(world):
     assert pilot_main(base + ["--run", "rest", "--out", str(world / "rest"), "--only-undecided"]) == 0
     with open(world / "rest" / "results.csv", newline="", encoding="utf-8") as fh:
         assert sorted(r["ats_code"] for r in csv.DictReader(fh)) == ["GhostCo", "goneco", "soloco"]
+
+
+def test_name_matched_homepage_is_not_independent_for_a_dormant_smartrecruiters_board():
+    from company_dataset.enrich import homepage_is_independent
+
+    assert homepage_is_independent("reference_name_slug_domain", "site names itself", "smartrecruiters", 0) is False
+    assert homepage_is_independent("reference_name_slug_domain", "site names itself", "smartrecruiters", 4) is True
+    assert homepage_is_independent("reference_name_slug_domain", "site names itself", "greenhouse", 0) is True
+    assert homepage_is_independent("board_link", "site names itself", "smartrecruiters", 0) is True
+    assert homepage_is_independent("other", "links_to_board:smartrecruiters:x", "smartrecruiters", 0) is True
+    assert homepage_is_independent("other", "site names itself", "smartrecruiters", 4) is False
