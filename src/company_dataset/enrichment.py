@@ -146,13 +146,18 @@ class _PageParser(HTMLParser):
         self.meta: dict[str, str] = {}
         self.anchors: list[tuple[str, str]] = []
         self._in_title = False
+        self._title_done = False
+        self._svg_depth = 0
         self._anchor_href: str | None = None
         self._anchor_text: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         a = {k.lower(): (v or "") for k, v in attrs}
-        if tag == "title":
-            self._in_title = True
+        if tag == "svg":
+            self._svg_depth += 1
+        elif tag == "title":
+            # Inline SVG icons carry their own <title>; only the document's first one names the page.
+            self._in_title = not self._svg_depth and not self._title_done
         elif tag == "meta":
             key = (a.get("property") or a.get("name") or "").strip().lower()
             if key and "content" in a and key not in self.meta:
@@ -164,7 +169,10 @@ class _PageParser(HTMLParser):
             self._anchor_text = []
 
     def handle_endtag(self, tag):
-        if tag == "title":
+        if tag == "svg":
+            self._svg_depth = max(0, self._svg_depth - 1)
+        elif tag == "title":
+            self._title_done = self._title_done or self._in_title
             self._in_title = False
         elif tag == "a" and self._anchor_href is not None:
             self._close_anchor()

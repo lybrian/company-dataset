@@ -31,7 +31,7 @@ from company_dataset.verification import INVALID_IDENTIFIER, LIVE, VERIFIED_LIVE
 
 # Identity bases whose stored name is the vendor's own: the hosted page it came from is not stored.
 _VENDOR_BASES = ("vendor_only", "vendor_not_corroborated", "vendor")
-_REFETCH_STATUSES = ("ok", "http_404", "http_410")
+_FINAL_PAGE_STATUSES = ("ok", "http_404", "http_410")
 
 
 def backfill_smartrecruiters_existence(conn, run: str, now: str) -> dict:
@@ -140,15 +140,16 @@ def _site_failure(site: str, page: dict | None, b: dict, names: list[str], metho
     return "", landed, evidence, on_careers
 
 
-def reverify_recovery(conn, run: str, from_run: str, client: HttpClient, now: str, workers: int = 12) -> dict:
+def reverify_recovery(conn, run: str, from_run: str, client: HttpClient, now: str, workers: int = 12, refetch: bool = False) -> dict:
     """Hold another run's reference-sourced websites to the homepage rules every other row meets.
-    Boards that pass are recorded under `run`, with values re-derived from the fetched homepage."""
+    Boards that pass are recorded under `run`, with values re-derived from the fetched homepage.
+    refetch: ignore stored pages, for when the summaries were written by an older parser."""
     rows = conn.execute(
         "SELECT i.board_id, i.name AS identity_name, e.value AS website, e.method FROM identities i JOIN field_evidence e"
         " ON e.board_id=i.board_id AND e.run=i.run AND e.field='website_url' AND e.status='verified'"
         " WHERE i.run=? AND i.status=? ORDER BY i.board_id", (from_run, CONFIRMED)).fetchall()
     sites = {r["board_id"]: clean_website(r["website"]) for r in rows}
-    stale = sorted({s for s in sites.values() if s and ((store.page(conn, s) or {}).get("status") not in _REFETCH_STATUSES)})
+    stale = sorted({s for s in sites.values() if s and (refetch or (store.page(conn, s) or {}).get("status") not in _FINAL_PAGE_STATUSES)})
     with ThreadPoolExecutor(max_workers=workers) as ex:
         fetched = dict(zip(stale, ex.map(lambda u: fetch_page(client, u), stale)))
     boards = {b["id"]: b for b in load_boards(conn)}
@@ -212,6 +213,7 @@ def main(argv=None) -> int:
     p.add_argument("--run", required=True)
     p.add_argument("--from-runs", default="", help="reresolve: comma-separated runs whose newest decision per board is the starting point")
     p.add_argument("--from-run", default="recovery1", help="reverify-recovery: the run whose websites are checked")
+    p.add_argument("--refetch", action="store_true", help="reverify-recovery: fetch every site again instead of using stored pages")
     a = p.parse_args(argv)
     conn = store.connect(a.db)
     if a.step == "sr-existence":
@@ -219,7 +221,7 @@ def main(argv=None) -> int:
     elif a.step == "reresolve":
         out = reresolve_identities(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
     else:
-        out = reverify_recovery(conn, a.run, a.from_run, HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2), utc_now())
+        out = reverify_recovery(conn, a.run, a.from_run, HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2), utc_now(), refetch=a.refetch)
     print(json.dumps(out, indent=1))
     return 0
 
