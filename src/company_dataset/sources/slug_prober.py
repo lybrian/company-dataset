@@ -23,8 +23,8 @@ from company_dataset.enrichment import name_key
 from company_dataset.http import HttpClient, RequestError
 from company_dataset.identity import registrable_domain
 from company_dataset.models import SourceMeta
-from company_dataset.normalize import ASHBY, GREENHOUSE, LEVER, SMARTRECRUITERS, canonical_board_url, host_of
-from company_dataset.sources._harvest import parse_tokens, write_tokens
+from company_dataset.normalize import ASHBY, BREEZY, GREENHOUSE, LEVER, SMARTRECRUITERS, canonical_board_url, host_of
+from company_dataset.sources._harvest import board_from_url, parse_tokens, write_tokens
 from company_dataset.validate import smartrecruiters_generic_page
 
 VENDORS = (GREENHOUSE, LEVER, ASHBY, SMARTRECRUITERS)
@@ -69,31 +69,40 @@ def probe_url(ats: str, slug: str) -> str:
         return f"https://api.lever.co/v0/postings/{q}?mode=json&limit=1"
     if ats == ASHBY:
         return f"https://api.ashbyhq.com/posting-api/job-board/{q}"
+    if ats == BREEZY:
+        return f"https://{q}.breezy.hr/json"
     # The SmartRecruiters API answers 200 for any identifier: only its careers page can tell.
     return canonical_board_url(SMARTRECRUITERS, slug)
 
 
-def probe(client: HttpClient, ats: str, slug: str) -> str:
+def probe_detail(client: HttpClient, ats: str, slug: str) -> tuple[str, tuple[str, str, str] | None]:
+    """(result, another board this one redirected to, if any)."""
     try:
         resp = client.get(probe_url(ats, slug))
     except RequestError:
-        return ERROR
+        return ERROR, None
     if resp.status == 429:
-        return RATE_LIMITED
+        return RATE_LIMITED, None
     if resp.status in (404, 410):
-        return MISSING
+        return MISSING, None
     if resp.status != 200:
-        return ERROR
+        return ERROR, None
     if ats == SMARTRECRUITERS and smartrecruiters_generic_page(resp.url):
-        return MISSING
-    return LIVE
+        return MISSING, None
+    landed = board_from_url(resp.url or "")
+    moved = landed if landed and (landed[0], landed[1].casefold()) != (ats, slug.casefold()) else None
+    return LIVE, moved
 
 
-def probe_vendor(client: HttpClient, ats: str, slugs: list[str], sleep=time.sleep, on_hit=lambda ats, slug: None) -> dict:
+def probe(client: HttpClient, ats: str, slug: str) -> str:
+    return probe_detail(client, ats, slug)[0]
+
+
+def probe_vendor(client: HttpClient, ats: str, slugs: list[str], sleep=time.sleep, on_hit=lambda ats, slug, moved=None: None) -> dict:
     stats = {"tried": 0, LIVE: 0, MISSING: 0, ERROR: 0, RATE_LIMITED: 0, "stopped_by_rate_limit": False}
     streak = 0
     for slug in slugs:
-        result = probe(client, ats, slug)
+        result, moved = probe_detail(client, ats, slug)
         stats["tried"] += 1
         stats[result] += 1
         if result == RATE_LIMITED:
@@ -105,7 +114,7 @@ def probe_vendor(client: HttpClient, ats: str, slugs: list[str], sleep=time.slee
             continue
         streak = 0
         if result == LIVE:
-            on_hit(ats, slug)
+            on_hit(ats, slug, moved)
     return stats
 
 
@@ -135,16 +144,18 @@ def plan_slugs(companies: list[tuple[str, str]], known: set[tuple[str, str]], li
     return plan
 
 
-def run(raw_dir: Path, plan: dict[str, list[str]], client_factory=None) -> dict:
-    out = Path(raw_dir) / META.name
+def run(raw_dir: Path, plan: dict[str, list[str]], client_factory=None, meta: SourceMeta = META) -> dict:
+    out = Path(raw_dir) / meta.name
     out.mkdir(parents=True, exist_ok=True)
     tokens: dict[tuple[str, str], tuple[str, str, str]] = {}
     lock = threading.Lock()
     report: dict[str, dict] = {}
 
-    def on_hit(ats, slug):
+    def on_hit(ats, slug, moved=None):
         with lock:
             tokens[(ats, slug.casefold())] = (slug, "", "slug_probe")
+            if moved:
+                tokens.setdefault((moved[0], moved[1].casefold()), (moved[1], moved[2], f"redirect:{ats}:{slug}"))
 
     def work(ats):
         client = (client_factory or (lambda: HttpClient(timeout=20, max_attempts=1, per_host_interval=SECONDS_BETWEEN_REQUESTS)))()
@@ -156,7 +167,7 @@ def run(raw_dir: Path, plan: dict[str, list[str]], client_factory=None) -> dict:
         t.start()
     for t in threads:
         t.join()
-    write_tokens(out / META.filename, tokens)
+    write_tokens(out / meta.filename, tokens)
     (out / "probe_report.json").write_text(json.dumps(report, indent=1, sort_keys=True))
     return report
 

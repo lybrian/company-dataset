@@ -99,6 +99,8 @@ def resolve_identity(claims: list[NameClaim], code: str = "", board_ownership: b
     return Identity(UNRESOLVED, best, ["insufficient_independent_evidence"])
 
 
+_LEGAL_WORDS_FOR_NAMES = frozenset("inc incorporated llc llp lp ltd limited corp corporation co company plc pbc gmbh ag ab as asa oy oyj bv nv sa sas sarl srl spa kg ug se pty pte the and of".split())
+
 # Words that qualify a name without changing which company it is: legal forms, places,
 # and site furniture ("Official Website", "Home").
 _QUALIFIERS = frozenset("""

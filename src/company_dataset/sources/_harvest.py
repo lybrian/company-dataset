@@ -57,3 +57,18 @@ def parse_tokens(path: Path, source: str) -> tuple[list[SourceRecord], list[Reje
             # No name: a discovered identifier says nothing about which company runs the board.
             records.append(SourceRecord(source=source, ats=ats, code=code, region=(row.get("region") or "").strip() or None, row_ref=ref))
     return records, rejects
+
+
+# Any URL on a target ATS domain. Finding the board in it is parse_board_url's job: a slug regex
+# here would read Breezy's path instead of its subdomain and miss job-boards.greenhouse.io.
+ATS_URL_RE = re.compile(r"https?://[A-Za-z0-9.-]*(?:greenhouse\.io|lever\.co|ashbyhq\.com|smartrecruiters\.com|breezy\.hr)[^\s\"'<>)\]}\\,|`]*", re.I)
+
+
+def boards_in_text(text: str, evidence: str) -> dict[tuple[str, str], tuple[str, str, str]]:
+    """Every target-ATS board a piece of text links to, in the form write_tokens takes."""
+    found: dict[tuple[str, str], tuple[str, str, str]] = {}
+    for url in ATS_URL_RE.findall(text or ""):
+        board = board_from_url(url)
+        if board:
+            found.setdefault((board[0], board[1].casefold()), (board[1], board[2], evidence))
+    return found
