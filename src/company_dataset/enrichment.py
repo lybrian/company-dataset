@@ -10,9 +10,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from company_dataset.build import load_candidates
 from company_dataset.http import HttpClient, RequestError
-from company_dataset.models import utc_now
+from company_dataset.models import load_candidates, utc_now
 from company_dataset.platforms import EXTRA_ATS, PERSONIO
 from company_dataset.normalize import (
     ASHBY,

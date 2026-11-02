@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from company_dataset.build import load_candidates
 from company_dataset.config import resolve_rate_limits
 from company_dataset.enrichment import (
     ashby_facts,
@@ -23,7 +22,7 @@ from company_dataset.enrichment import (
     strip_html,
 )
 from company_dataset.http import HttpClient, RequestError
-from company_dataset.models import BoardValidation, Candidate, utc_now
+from company_dataset.models import BoardValidation, Candidate, load_candidates, utc_now
 from company_dataset.platforms import EXTRA_ATS
 from company_dataset.validate_extra import validate_extra
 from company_dataset.normalize import (

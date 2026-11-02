@@ -306,3 +306,19 @@ def career_subdomain_parent(host: str) -> str | None:
     if len(labels) >= 3 and labels[0] in CAREER_SUBDOMAINS:
         return ".".join(labels[1:])
     return None
+
+
+def validation_endpoint(ats: str, code: str, outcome: dict) -> str:
+    """Return the actual URL that was validated, using the code that validated.
+    
+    For SmartRecruiters: use the original token case in the API URL.
+    For Lever: use the EU host if the EU host answered.
+    For others: use the standard canonical API URL with the validated code.
+    """
+    validated_code = outcome.get("code_validated") or code
+    if ats == SMARTRECRUITERS:
+        return canonical_api_url(SMARTRECRUITERS, validated_code)
+    if ats == LEVER:
+        region = outcome.get("region_answered")
+        return canonical_api_url(LEVER, validated_code, region)
+    return canonical_api_url(ats, validated_code)

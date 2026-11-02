@@ -130,25 +130,3 @@ def run_build(dirs: dict) -> dict:
         f"duplicate_rows_merged={stats['duplicate_rows']}"
     )
     return stats
-
-
-def load_candidates(dirs: dict) -> list[Candidate]:
-    path = Path(dirs["intermediate"]) / "candidates.csv"
-    candidates: list[Candidate] = []
-    if not path.exists():
-        return candidates
-    with open(path, newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            alt = [c for c in (row.get("alt_codes") or "").split(";") if c]
-            candidates.append(
-                Candidate(
-                    ats=row["ats"],
-                    codes=[row["code"]] + alt,
-                    region=row.get("region") or None,
-                    name=row.get("name") or None,
-                    name_source=row.get("name_source") or "",
-                    careersite_urls=[u for u in (row.get("careersite_urls") or "").split("; ") if u],
-                    sources=[s for s in (row.get("sources") or "").split("; ") if s],
-                )
-            )
-    return candidates

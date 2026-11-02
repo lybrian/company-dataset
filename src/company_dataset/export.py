@@ -1,658 +1,468 @@
+"""Export: deliverable files from the store. Deterministic: same store + same runs -> byte-identical files.
+
+    python -m company_dataset.export --db data/store.db --runs fullrun,disc1 --out data/exports/final_YYYY-MM-DD
+    python -m company_dataset.export --db data/store.db --run pilot1 --out data/exports/pilot1
+
+--run exports one run; --runs merges several, where a board decided in more than one keeps its
+newest run's decision and evidence. Counts are kept apart: candidate boards, live boards,
+identity-confirmed boards, unique companies (clusters), complete companies. Companies are clustered
+with cluster_companies (strong shared keys + matching names), never on a name alone.
+
+Stored websites are re-checked with the current website rules using stored pages only (no
+fetches); a website that fails is dropped with the fields found through it. The rules can only
+remove a verification, never add one.
+"""
 from __future__ import annotations
 
+import argparse
 import csv
+import hashlib
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from company_dataset import reference as reference_mod
-from company_dataset.build import load_candidates
-from company_dataset.enrichment import (
-    ASHBY,
-    GREENHOUSE,
-    LEVER,
-    board_from_validation,
-    is_auxiliary_board,
-    is_test_board,
-    name_key,
-    names_match,
-)
-from company_dataset.normalize import BREEZY, SMARTRECRUITERS
-from company_dataset.platforms import EXTRA_ATS
-from company_dataset.models import REQUIRED_FIELDS, utc_now
-from company_dataset.normalize import canonical_api_url, host_of
-from company_dataset.resolve import resolve_board, slug_matches
+from company_dataset import store
+from company_dataset.enrich import website_supported
+from company_dataset.identity import CONFIRMED, careers_branded_domain, cluster_companies
+from company_dataset.normalize import canonical_board_url, clean_website, host_of
+from company_dataset.verification import LIVE
 
-COMPANY_COLUMNS = [
-    "name",
-    "description",
-    "linkedin_url",
-    "website_url",
-    "careersite_url",
-    "ats_system",
-    "ats_code",
-    "country",
-    "jobs_count",
-    "also_on_ats",
-    "other_boards",
-    "name_source",
-    "description_source",
-    "linkedin_source",
-    "website_source",
-    "country_source",
-    "validated_at",
-    "sources",
-    # Evidence columns (Stage C)
-    "http_status",
-    "checked_at",
-    "endpoint",
-    "verification_tier",
-]
-
-REJECT_COLUMNS = [
-    "source",
-    "reason",
-    "detail",
-    "row_ref",
-    "ats_system",
-    "ats_code",
-    "name",
-    "careersite_url",
-    "raw_json",
-]
-
-# The same description on this many unrelated companies is template text, not theirs.
-SHARED_DESCRIPTION_LIMIT = 3
+REQUIRED = ["company_name", "description", "linkedin_url", "website_url", "careersite_url", "ats_system", "ats_code"]
+RUN_EXTRA = ["country", "verification_status", "verification_date", "verification_endpoint", "jobs_count", "identity_status", "identity_basis",
+         "careersite_evidence", "website_method", "linkedin_method", "description_method", "sources", "company_id", "other_boards", "board_id"]
+FIELD_FOR = {"name": "company_name", "description": "description", "linkedin_url": "linkedin_url", "website_url": "website_url",
+             "careersite_url": "careersite_url", "ats_system": "ats_system", "ats_code": "ats_code", "country": "country"}
 
 
-def _validation_endpoint(ats: str, code: str, outcome: dict) -> str:
-    """Return the actual URL that was validated, using the code that validated.
-    
-    For SmartRecruiters: use the original token case in the API URL.
-    For Lever: use the EU host if the EU host answered.
-    For others: use the standard canonical API URL with the validated code.
-    """
-    validated_code = outcome.get("code_validated") or code
-    if ats == SMARTRECRUITERS:
-        return canonical_api_url(SMARTRECRUITERS, validated_code)
-    if ats == LEVER:
-        region = outcome.get("region_answered")
-        return canonical_api_url(LEVER, validated_code, region)
-    return canonical_api_url(ats, validated_code)
+def board_rows(conn, run: str) -> list[dict]:
+    """One row per board decided in this run, built only from stored evidence."""
+    rows, websites = {}, {}
+    q = ("SELECT i.board_id, i.status, i.name, i.basis, b.ats, b.code FROM identities i JOIN boards b ON b.id=i.board_id"
+         " WHERE i.run=? ORDER BY i.board_id")
+    for r in conn.execute(q, (run,)):
+        rows[r["board_id"]] = {"board_id": r["board_id"], "identity_status": r["status"], "identity_basis": r["basis"] or "",
+                               "ats_system": r["ats"], "ats_code": r["code"], **{c: "" for c in REQUIRED[:5]},
+                               "country": "", "careersite_evidence": "", "website_method": "", "linkedin_method": "", "description_method": ""}
+    # Newest evidence per (board, field); a 'candidate' careersite (page blocked) is reported, not counted as verified.
+    for r in conn.execute("SELECT board_id, field, value, method, evidence_url, evidence_text, status FROM field_evidence WHERE run=? ORDER BY board_id, field, observed_at, id", (run,)):
+        row = rows.get(r["board_id"])
+        if row is None:
+            continue
+        col = FIELD_FOR.get(r["field"])
+        if r["field"] == "careersite_url":
+            row["careersite_evidence"] = r["status"] + ":" + r["method"]
+            row["careersite_url"] = r["value"]
+            row["_careersite_landed"] = r["evidence_url"] or ""
+        elif col and r["status"] == "verified":
+            row[col] = r["value"]
+            if r["field"] in ("website_url", "linkedin_url", "description"):
+                row[r["field"].split("_")[0] + "_method"] = r["method"]
+            if r["field"] == "website_url":
+                websites[r["board_id"]] = r
+            if r["field"] == "country":
+                row["_country_method"] = r["method"]
+    latest = {}
+    for r in conn.execute("SELECT * FROM verifications WHERE origin=? ORDER BY board_id, checked_at", (run,)):
+        latest[r["board_id"]] = r
+    for bid, row in rows.items():
+        v = latest.get(bid)
+        row["verification_status"] = v["outcome"] if v else ""
+        row["verification_date"] = v["checked_at"] if v else ""
+        row["verification_endpoint"] = v["endpoint"] if v else ""
+        row["jobs_count"] = "" if not v or v["jobs_count"] is None else v["jobs_count"]
+        if row["identity_status"] != CONFIRMED:
+            row["company_name"] = ""
+    srcs: dict[int, list[str]] = {}
+    for r in conn.execute("SELECT DISTINCT sr.board_id, s.name FROM source_rows sr JOIN sources s ON s.id=sr.source_id WHERE sr.board_id IS NOT NULL ORDER BY sr.board_id, s.name"):
+        if r[0] in rows:
+            srcs.setdefault(r[0], []).append(r[1])
+    names = {r["board_id"]: r["name"] for r in conn.execute("SELECT board_id, name FROM identities WHERE run=?", (run,))}
+    for bid, row in rows.items():
+        row["sources"] = ";".join(srcs.get(bid, []))
+        if bid in websites:
+            row["_website_rule"] = website_rule_failure(conn, websites[bid], names.get(bid))
+            if row["_website_rule"]:
+                drop_website(row)
+    return [rows[k] for k in sorted(rows)]
 
 
-def _verification_tier(ats: str, outcome: dict, board, res, cand: Candidate | None = None) -> str:
-    """Determine verification tier per Stage C rules.
-    
-    A = jobs > 0 with no Lever region conflict
-    B = Lever with jobs > 0 where candidate region differs from region_answered
-    C = zero jobs with independent association evidence:
-        - Breezy: always (validation required hosted-page identity for empty boards)
-        - Greenhouse: only if names_match(outcome company_name, candidate/source name) is true; if no candidate name, blank
-        - Lever/Ashby/SmartRecruiters zero-job: blank
-    No tier for unresolved or invalid records.
-    """
-    jobs_count = outcome.get("jobs_count") or 0
-    status = outcome.get("status")
-    
-    if status != "valid":
-        return ""
-    
-    if jobs_count > 0:
-        # Tier B: Lever with region mismatch (candidate region != region_answered)
-        if ats == LEVER:
-            cand_region = (cand.region or "us").lower() if cand else "us"
-            # region_answered: "eu" for EU, None for US (default to "us")
-            region_answered = (outcome.get("region_answered") or "us").lower()
-            if cand_region != region_answered:
-                return "B"
-        # Tier A: jobs > 0 with no Lever region conflict
-        return "A"
-    
-    # jobs_count == 0: Tier C with conditions
-    if ats == BREEZY:
-        # The validator only marks an empty Breezy /json valid after the hosted page
-        # names the company, so every valid zero-job Breezy board already has that evidence.
-        return "C"
-    
-    if ats == GREENHOUSE:
-        # Greenhouse C only if names_match(outcome company_name, candidate/source name) is true
-        # If no candidate name, blank
-        if cand and cand.name:
-            outcome_name = outcome.get("company_name") or ""
-            if outcome_name and names_match(outcome_name, cand.name):
-                return "C"
-        return ""
-    
-    # Lever/Ashby/SmartRecruiters zero-job: blank
-    if ats in (LEVER, ASHBY, SMARTRECRUITERS):
-        return ""
-
-    # Added platforms: C only when the board's own API/page names a company that matches the source name.
-    if ats in EXTRA_ATS:
-        outcome_name = outcome.get("company_name") or ""
-        if cand and cand.name and outcome_name and names_match(outcome_name, cand.name):
-            return "C"
-        return ""
-    
+def website_rule_failure(conn, w, name: str | None) -> str:
+    """Why a stored website fails the current rules ('' if it passes)."""
+    names = [name] if name else []
+    if not clean_website(w["value"]):
+        return "careers_platform_or_non_company_host"
+    if careers_branded_domain(w["value"], names):
+        return "careers_branded_domain"
+    basis = w["method"].split("+")[0]
+    if (w["evidence_text"] or "").startswith("links_to_board") and not website_supported(
+            w["value"], store.page(conn, w["evidence_url"]), names, basis, w["evidence_url"]):
+        return "board_link_only:domain_and_homepage_do_not_name_company"
     return ""
 
 
-def _read_json(path: Path, default=None):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except ValueError:
-        return default
+def drop_website(row: dict) -> None:
+    """LinkedIn is only looked for on a verified website, homepage descriptions and domain-based
+    countries come from it: all go with it. Vendor descriptions and job-location countries stay."""
+    row["_dropped_website"] = row["website_url"]
+    row["website_url"] = row["website_method"] = ""
+    row["linkedin_url"] = row["linkedin_method"] = ""
+    if row["description_method"].startswith("homepage_meta"):
+        row["description"] = row["description_method"] = ""
+    if row.get("_country_method", "").endswith("by_verified_domain"):
+        row["country"] = ""
+    # A careersite counted as verified because the board redirected to the dropped site's domain.
+    landed = host_of(row.get("_careersite_landed", ""))
+    if row["careersite_evidence"].startswith("verified") and landed and landed != host_of(row["careersite_url"]):
+        row["careersite_evidence"] = "unverified:redirected_to_dropped_website"
 
 
-def _load_source_rejects(dirs: dict) -> list[list]:
-    path = dirs["intermediate"] / "source_rejects.csv"
-    rows: list[list] = []
-    if not path.exists():
-        return rows
-    with open(path, newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            rows.append([
-                row["source"],
-                row["reason"],
-                row["detail"],
-                row["row_ref"],
-                row.get("ats") or "",
-                row.get("code") or "",
-                "",
-                "",
-                row.get("raw_json") or "",
-            ])
-    return rows
+def is_complete(row: dict) -> bool:
+    return (row["identity_status"] == CONFIRMED and row["verification_status"] in LIVE
+            and row["careersite_evidence"].startswith("verified") and all(row[c] for c in REQUIRED))
 
 
-def missing_fields(row: dict) -> list[str]:
-    return [f for f in REQUIRED_FIELDS if not str(row.get(f) or "").strip()]
+def run_export(conn, run: str, out: Path) -> dict:
+    if out.exists():
+        raise FileExistsError(out)
+    rows = board_rows(conn, run)
+    confirmed = [r for r in rows if r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE]
+    clusters = cluster_companies([{"name": r["company_name"], "website_url": r["website_url"], "website_verified": bool(r["website_url"]),
+                                   "linkedin_url": r["linkedin_url"], "ats_system": r["ats_system"], "ats_code": r["ats_code"]} for r in confirmed])
+    companies, links = [], []
+    for g in clusters:
+        members = sorted((confirmed[i] for i in g), key=lambda r: (not is_complete(r), -sum(bool(r[c]) for c in REQUIRED),
+                                                                    -(int(r["jobs_count"] or 0)), r["ats_system"], r["ats_code"].casefold()))
+        primary = dict(members[0])
+        cid = f"c{primary['board_id']}"
+        primary["company_id"] = cid
+        primary["other_boards"] = ";".join(f"{m['ats_system']}:{m['ats_code']}" for m in members[1:])
+        companies.append(primary)
+        for m in members:
+            links.append({"company_id": cid, "board_id": m["board_id"], "ats_system": m["ats_system"], "ats_code": m["ats_code"],
+                          "role": "primary" if m is members[0] else "same_company"})
+    companies.sort(key=lambda r: (r["company_name"].casefold(), r["ats_system"], r["ats_code"].casefold()))
+    complete = [r for r in companies if is_complete(r)]
+    unresolved = [r for r in rows if not (r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE)]
+    rule_changes = [{"board_id": r["board_id"], "ats_system": r["ats_system"], "ats_code": r["ats_code"], "identity_status": r["identity_status"],
+                     "company_name": r["company_name"], "website_url": r["_dropped_website"], "reason": r["_website_rule"]}
+                    for r in rows if r.get("_website_rule")]
 
-
-def _filled(row: dict) -> int:
-    return len(REQUIRED_FIELDS) - len(missing_fields(row))
-
-
-def drop_conflicting_linkedin(rows: list[dict]) -> int:
-    """A LinkedIn page shared by different websites belongs to at most the rows it names."""
-    by_li: dict[str, set] = defaultdict(set)
-    for row in rows:
-        if row["linkedin_url"]:
-            by_li[row["linkedin_url"].lower()].add(host_of(row["website_url"]))
-    dropped = 0
-    for row in rows:
-        li = row["linkedin_url"]
-        if li and len(by_li[li.lower()]) > 1:
-            slug = li.rsplit("/", 1)[-1]
-            if not slug_matches(slug, row["name"], row["website_url"]):
-                row["linkedin_url"] = ""
-                row["linkedin_source"] = ""
-                dropped += 1
-    return dropped
-
-
-def drop_shared_descriptions(rows: list[dict]) -> int:
-    by_desc: dict[str, set] = defaultdict(set)
-    for row in rows:
-        if row["description"]:
-            by_desc[row["description"].casefold()].add(host_of(row["website_url"]) or row["ats_code"])
-    dropped = 0
-    for row in rows:
-        d = row["description"]
-        if d and len(by_desc[d.casefold()]) >= SHARED_DESCRIPTION_LIMIT:
-            row["description"] = ""
-            row["description_source"] = ""
-            dropped += 1
-    return dropped
-
-
-def _jobs(row: dict) -> int:
-    return int(row["jobs_count"]) if str(row["jobs_count"]).isdigit() else -1
-
-
-UNCERTAIN_REASONS = {
-    "total_found_zero",
-    "company_identifier_mismatch",
-    "exists_no_identity",
-    "http_404_unrecognized",
-    "unexpected_schema",
-    "invalid_json",
-    "hosted_page_http_404",
-    "hosted_page_request_error",
-    "request_error",
-    "http_",
-    "validation_unresolved",
-    "not_validated",
-}
-
-DEAD_REASONS = {
-    "board_not_found",
-    "careersite_unavailable",
-    "validation_failed",
-}
-
-
-def _write_uncertain_and_dead_companies(review: Path, candidates: list, cache: dict, careersite_unavailable_keys: set[str], no_identity_keys: set[str] = frozenset()):
-    """Write uncertain_companies.csv and dead_companies.csv with reason column.
-    
-    Only validation outcomes go here:
-    - uncertain: not_validated, validation_unresolved (total_found_zero, etc.)
-    - dead: board_not_found (validation_failed), careersite_unavailable (valid boards with dead hosted pages)
-    
-    Export-time rejections (test_or_demo_board, auxiliary_board, duplicate_company_board, 
-    source_marked_dead, unparseable_url, unsupported_ats) are only in rejected_records.csv.
-    """
-    uncertain_rows = []
-    dead_rows = []
-
-    # Process all candidates for validation outcomes only
-    for cand in candidates:
-        outcome = cache.get(cand.key)
-        if outcome is None:
-            # Not validated - goes to uncertain
-            uncertain_rows.append({
-                "source": "; ".join(cand.sources),
-                "reason": "not_validated",
-                "detail": "no validation result; run validate stage",
-                "ats_system": cand.ats,
-                "ats_code": cand.code,
-                "name": cand.name or "",
-                "careersite_url": "; ".join(cand.careersite_urls),
-                "http_status": "",
-                "checked_at": "",
-                "endpoint": "",
-                "error": "not_validated",
-            })
-            continue
-
-        status = outcome.get("status")
-        error = outcome.get("error") or ""
-        http_status = outcome.get("http_status") or ""
-        checked_at = outcome.get("checked_at") or ""
-
-        if status == "valid" and cand.key in no_identity_keys:
-            uncertain_rows.append({
-                "source": "; ".join(cand.sources),
-                "reason": "identity_not_established",
-                "detail": "board is live but no source or vendor names the company",
-                "ats_system": cand.ats,
-                "ats_code": cand.code,
-                "name": "",
-                "careersite_url": "; ".join(cand.careersite_urls),
-                "http_status": str(outcome.get("http_status") or ""),
-                "checked_at": outcome.get("checked_at") or "",
-                "endpoint": _validation_endpoint(cand.ats, cand.code, outcome),
-                "error": "identity_not_established",
-            })
-            continue
-        if status == "valid":
-            # Check if this valid board was rejected as careersite_unavailable
-            if cand.key in careersite_unavailable_keys:
-                dead_rows.append({
-                    "source": "; ".join(cand.sources),
-                    "reason": "careersite_unavailable",
-                    "detail": "vendor API answers but the hosted board page is gone",
-                    "ats_system": cand.ats,
-                    "ats_code": cand.code,
-                    "name": cand.name or "",
-                    "careersite_url": "; ".join(cand.careersite_urls),
-                    "http_status": str(outcome.get("http_status") or ""),
-                    "checked_at": outcome.get("checked_at") or "",
-                    "endpoint": _validation_endpoint(cand.ats, cand.code, outcome),
-                    "error": "careersite_unavailable",
-                })
-            continue
-
-        row = {
-            "source": "; ".join(cand.sources),
-            "reason": error if error else status,
-            "detail": f'http={outcome.get("http_status")} error={error or ""}',
-            "ats_system": cand.ats,
-            "ats_code": cand.code,
-            "name": cand.name or "",
-            "careersite_url": "; ".join(cand.careersite_urls),
-            "http_status": str(http_status) if http_status else "",
-            "checked_at": outcome.get("checked_at") or "",
-            "endpoint": _validation_endpoint(cand.ats, cand.code, outcome),
-            "error": error if error else status,
-        }
-
-        # Classify based on EXACT reason matching
-        reason = row["reason"]
-        if reason in DEAD_REASONS:
-            dead_rows.append(row)
-        elif reason in UNCERTAIN_REASONS or status == "unresolved" or status == "not_validated":
-            uncertain_rows.append(row)
-        else:
-            # Default to uncertain for any other non-valid status
-            uncertain_rows.append(row)
-
-    # Write uncertain_companies.csv
-    if uncertain_rows:
-        review.mkdir(parents=True, exist_ok=True)
-        uncertain_cols = ["source", "reason", "detail", "ats_system", "ats_code", "name", "careersite_url", "http_status", "checked_at", "endpoint", "error"]
-        with open(review / "uncertain_companies.csv", "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=uncertain_cols)
-            writer.writeheader()
-            writer.writerows(uncertain_rows)
-
-    # Write dead_companies.csv
-    if dead_rows:
-        review.mkdir(parents=True, exist_ok=True)
-        dead_cols = ["source", "reason", "detail", "ats_system", "ats_code", "name", "careersite_url", "http_status", "checked_at", "endpoint", "error"]
-        with open(review / "dead_companies.csv", "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=dead_cols)
-            writer.writeheader()
-            writer.writerows(dead_rows)
-
-
-def _jobs(row: dict) -> int:
-    return int(row["jobs_count"]) if str(row["jobs_count"]).isdigit() else -1
-
-
-def collapse_companies(rows: list[dict]) -> tuple[list[dict], list[dict]]:
-    """One row per company, across all ATSes.
-
-    Boards are the same company only when they share a strong key (registrable website
-    domain, LinkedIn page) AND their names match. A shared name alone never merges boards,
-    and neither does a shared domain under different names (affiliates, franchise sites, or
-    one wrong website). The most complete board is kept, then the one with the most jobs;
-    the rest are listed in `other_boards` and returned as extras.
-    """
-    from company_dataset.identity import cluster_companies
-
-    clusters = cluster_companies([{**r, "website_verified": bool(r["website_url"])} for r in rows])
-    groups: dict[int, list[dict]] = {g[0]: [rows[i] for i in g] for g in clusters}
-    keep: list[dict] = []
-    extras: list[dict] = []
-    for group in groups.values():
-        group.sort(key=lambda r: (-_filled(r), -_jobs(r), r["ats_system"], r["ats_code"].casefold()))
-        primary = group[0]
-        others = group[1:]
-        primary["also_on_ats"] = ";".join(sorted({r["ats_system"] for r in others} - {primary["ats_system"]}))
-        primary["other_boards"] = ";".join(f"{r['ats_system']}:{r['ats_code']}" for r in others)
-        keep.append(primary)
-        extras.extend(others)
-    return keep, extras
-
-
-DETAILED_COLUMNS = COMPANY_COLUMNS + ["complete", "missing_fields"]
-
-
-def _by_name(row: dict):
-    return ((row["name"] or "~").casefold(), row["ats_system"], row["ats_code"].casefold())
-
-
-def write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _check_overwrite(dirs: dict, run_dir: str | None = None) -> list[Path]:
-    """Check if any target files already exist. Returns list of existing files.
-    
-    In default mode (no --run-dir): checks output/, review/, reports/ under dirs.
-    With --run-dir: checks the run_dir/output, run_dir/review, run_dir/reports.
-    """
-    if run_dir is not None:
-        run_path = Path(run_dir)
-        targets = [
-            run_path / "output" / "companies_complete.csv",
-            run_path / "output" / "companies_incomplete.csv",
-            run_path / "output" / "companies_total.csv",
-            run_path / "output" / "source_manifest.csv",
-            run_path / "review" / "companies_detailed.csv",
-            run_path / "review" / "rejected_records.csv",
-            run_path / "review" / "uncertain_companies.csv",
-            run_path / "review" / "dead_companies.csv",
-            run_path / "review" / "possible_duplicates.csv",
-            run_path / "reports" / "quality_report.md",
-        ]
-    else:
-        output = dirs["output"]
-        review = Path(dirs.get("review") or Path(dirs["data"]) / "review")
-        reports = dirs["reports"]
-        targets = [
-            output / "companies_complete.csv",
-            output / "companies_incomplete.csv",
-            output / "companies_total.csv",
-            output / "source_manifest.csv",
-            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "companies_detailed.csv",
-            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "rejected_records.csv",
-            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "uncertain_companies.csv",
-            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "dead_companies.csv",
-            Path(dirs.get("review") or Path(dirs["data"]) / "review") / "possible_duplicates.csv",
-            dirs["reports"] / "quality_report.md",
-        ]
-    
-    existing = [p for p in targets if p.exists()]
-    return existing
-
-
-def run_export(dirs: dict, ref=None, run_dir: str | None = None) -> dict:
-    # No-overwrite check for both default mode and --run-dir
-    existing = _check_overwrite(dirs, run_dir)
-    if existing:
-        paths = ", ".join(str(p) for p in existing)
-        raise FileExistsError(f"Target files already exist (use --run-dir or remove them): {paths}")
-    
-    # No-overwrite check for --run-dir (directory itself)
-    if run_dir is not None:
-        run_path = Path(run_dir)
-        if run_path.exists():
-            raise FileExistsError(f"Run directory already exists: {run_dir}")
-        # Create the directory structure
-        run_path.mkdir(parents=True, exist_ok=True)
-        # Override the output and review directories to use run_dir
-        dirs = dict(dirs)
-        dirs["output"] = run_path / "output"
-        dirs["review"] = run_path / "review"
-        dirs["reports"] = run_path / "reports"
-        for d in (dirs["output"], dirs["review"], dirs["reports"]):
-            d.mkdir(parents=True, exist_ok=True)
-    
-    candidates = load_candidates(dirs)
-    cache = _read_json(dirs["cache"] / "validation.json", {}) or {}
-    pages = _read_json(dirs["cache"] / "pages.json", {}) or {}
-    ref = ref if ref is not None else reference_mod.load_saved(dirs)
-    build_stats = _read_json(dirs["intermediate"] / "build_stats.json", {}) or {}
-    manifest = _read_json(dirs["intermediate"] / "manifest.json", []) or []
-
-    live: list[dict] = []
-    validation_rejects: list[list] = []
-    careersite_unavailable_keys: set[str] = set()
-    no_identity_keys: set[str] = set()
-    for cand in candidates:
-        ats, code = cand.ats, cand.code
-        sources = "; ".join(cand.sources)
-        careersites = "; ".join(cand.careersite_urls)
-        outcome = cache.get(cand.key)
-        if outcome is None:
-            validation_rejects.append([sources, "not_validated", "no validation result; run validate stage", "", ats, code, cand.name or "", careersites, ""])
-            continue
-        if outcome.get("status") != "valid":
-            reason = "validation_failed" if outcome.get("status") == "invalid" else "validation_unresolved"
-            detail = f'http={outcome.get("http_status")} error={outcome.get("error") or ""}'
-            validation_rejects.append([sources, reason, detail, "", ats, code, cand.name or "", careersites, ""])
-            continue
-        board = board_from_validation(cand, outcome)
-        res = resolve_board(board, outcome, pages, ref, source_name=cand.name or "", source_name_origin=cand.name_source)
-        if any(is_test_board(n, board.code) for n in (res.name, outcome.get("company_name"), cand.name)):
-            validation_rejects.append([sources, "test_or_demo_board", "vendor sandbox / demo / test board, not a company", "", ats, board.code, res.name or outcome.get("company_name") or "", board.careersite_url, ""])
-            continue
-        if any(is_auxiliary_board(n) for n in (res.name, outcome.get("company_name"))):
-            validation_rejects.append([sources, "auxiliary_board", "internal / referral / talent-pool board, not the company's main board", "", ats, board.code, res.name or outcome.get("company_name") or "", board.careersite_url, ""])
-            continue
-        if res.careersite_status == "dead":
-            careersite_unavailable_keys.add(cand.key)
-            validation_rejects.append([sources, "careersite_unavailable", "vendor API answers but the hosted board page is gone", "", ats, board.code, res.name, board.careersite_url, ""])
-            continue
-        if not res.name:
-            # A live board alone doesn't say whose it is; without a name it isn't a verified company.
-            no_identity_keys.add(cand.key)
-            validation_rejects.append([sources, "identity_not_established", "board is live but no source or vendor names the company", "", ats, board.code, "", board.careersite_url, ""])
-            continue
-        # Evidence columns
-        http_status = outcome.get("http_status")
-        checked_at = outcome.get("checked_at") or ""
-        endpoint = _validation_endpoint(ats, code, outcome)
-        verification_tier = _verification_tier(ats, outcome, board, res, cand)
-        if not verification_tier:
-            # Live but empty, and nothing beyond a list name says whose board it is.
-            no_identity_keys.add(cand.key)
-            validation_rejects.append([sources, "identity_not_established", "live board with zero jobs and no independent identity evidence", "", ats, board.code, res.name, board.careersite_url, ""])
-            continue
-
-        live.append({
-            "name": res.name,
-            "description": res.description,
-            "linkedin_url": res.linkedin_url,
-            "website_url": res.website_url,
-            "careersite_url": board.careersite_url,
-            "ats_system": ats,
-            "ats_code": board.code,
-            "country": res.country,
-            "jobs_count": outcome.get("jobs_count") if outcome.get("jobs_count") is not None else "",
-            "also_on_ats": "",
-            "other_boards": "",
-            **res.sources,
-            "validated_at": checked_at,
-            "sources": sources,
-            # Evidence columns
-            "http_status": http_status if http_status is not None else "",
-            "checked_at": checked_at,
-            "endpoint": endpoint,
-            "verification_tier": verification_tier,
-        })
-
-    linkedin_conflicts = drop_conflicting_linkedin(live)
-    shared_descriptions = drop_shared_descriptions(live)
-    kept, extra_boards = collapse_companies(live)
-    for row in extra_boards:
-        validation_rejects.append([row["sources"], "duplicate_company_board", f"same company as a kept board ({host_of(row['website_url']) or row['linkedin_url']})", "", row["ats_system"], row["ats_code"], row["name"], row["careersite_url"], ""])
-
-    for row in kept:
-        row["missing_fields"] = ";".join(missing_fields(row))
-        row["complete"] = "no" if row["missing_fields"] else "yes"
-    kept.sort(key=_by_name)
-    complete = [r for r in kept if r["complete"] == "yes"]
-    incomplete = [r for r in kept if r["complete"] == "no"]
-
-    # Hand-off files: the required fields first, in the same order in every file, so
-    # complete + incomplete line up with total.
-    write_csv(dirs["output"] / "companies_complete.csv", list(REQUIRED_FIELDS), complete)
-    write_csv(dirs["output"] / "companies_incomplete.csv", list(REQUIRED_FIELDS) + ["missing_fields"], incomplete)
-    
-    # companies_total.csv and companies_detailed.csv include evidence columns
-    EVIDENCE_COLUMNS = ["http_status", "checked_at", "jobs_count", "endpoint", "verification_tier"]
-    TOTAL_COLUMNS = list(REQUIRED_FIELDS) + ["complete", "missing_fields"] + EVIDENCE_COLUMNS
-    DETAILED_COLUMNS_WITH_EVIDENCE = DETAILED_COLUMNS + EVIDENCE_COLUMNS
-    
-    write_csv(dirs["output"] / "companies_total.csv", TOTAL_COLUMNS, complete + incomplete)
-
-    # Review files: provenance, rejects and possible duplicates, for checking the work.
-    review = Path(dirs.get("review") or Path(dirs["data"]) / "review")
-    write_csv(review / "companies_detailed.csv", DETAILED_COLUMNS_WITH_EVIDENCE, complete + incomplete)
-    rejects = _load_source_rejects(dirs) + validation_rejects
-    review.mkdir(parents=True, exist_ok=True)
-    with open(review / "rejected_records.csv", "w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(REJECT_COLUMNS)
-        writer.writerows(rejects)
-
-    # Write uncertain_companies.csv and dead_companies.csv
-    _write_uncertain_and_dead_companies(review, candidates, cache, careersite_unavailable_keys, no_identity_keys)
-
-    per_source = build_stats.get("per_source", {})
-    contributed = Counter(s for cand in candidates for s in cand.sources)
-    source_rows: list[dict] = []
-    for entry in manifest:
-        name = entry.get("source", "")
-        src_stats = per_source.get(name, {})
-        source_rows.append({
-            "source": name,
-            "role": entry.get("role", "boards"),
-            "description": entry.get("description", ""),
-            "download_url": entry.get("download_url", ""),
-            "license": entry.get("license", ""),
-            "license_url": entry.get("license_url", ""),
-            "license_note": entry.get("license_note", ""),
-            "attribution": entry.get("attribution", ""),
-            "downloaded_at": entry.get("downloaded_at") or "",
-            "sha256": entry.get("sha256", ""),
-            "size_bytes": entry.get("size_bytes", ""),
-            "rows_read": src_stats.get("rows_read", ""),
-            "in_scope_records": src_stats.get("records", ""),
-            "rejected_rows": src_stats.get("rejects", ""),
-            "contributed_candidates": contributed.get(name, ""),
-        })
-    with open(dirs["output"] / "source_manifest.csv", "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(source_rows[0].keys()) if source_rows else ["source"])
-        writer.writeheader()
-        writer.writerows(source_rows)
-
-    def completeness(rows):
-        total = len(rows)
-        return {f: {"non_null": sum(1 for r in rows if r[f]), "total": total, "pct": round(100 * sum(1 for r in rows if r[f]) / total, 2) if total else 0.0} for f in REQUIRED_FIELDS}
-
-    def countries(rows):
-        c = Counter(r["country"] for r in rows if r["country"])
-        focus = sum(c[k] for k in ("US", "GB", "CA"))
-        return {
-            "rows_with_country": sum(c.values()),
-            "us_uk_ca": focus,
-            "us_uk_ca_pct": round(100 * focus / len(rows), 2) if rows else 0.0,
-            "breakdown": dict(c.most_common()),
-        }
-
-    names = Counter(name_key(r["name"]) for r in kept if len(name_key(r["name"])) >= 3)
-    same_name = [r for r in kept if names[name_key(r["name"])] > 1]
-    write_csv(
-        review / "possible_duplicates.csv",
-        ["name", "ats_system", "ats_code", "website_url", "linkedin_url", "careersite_url"],
-        sorted(same_name, key=lambda r: (name_key(r["name"]), r["ats_system"], r["ats_code"])),
-    )
-    reject_reasons = Counter(r[1] for r in validation_rejects)
-    live_sources = [[s for s in r["sources"].split("; ") if s] for r in live]
-    source_overlap = {
-        "by_source_count": dict(sorted(Counter(len(s) for s in live_sources).items())),
-        "in_live_boards": dict(Counter(x for s in live_sources for x in s)),
-        "sole_source_for": dict(Counter(s[0] for s in live_sources if len(s) == 1)),
-    }
-    export_stats = {
-        "generated_at": utc_now(),
-        "live_boards": len(live),
-        "live_companies_after_collapse": len(kept),
+    out.mkdir(parents=True)
+    cols = REQUIRED + RUN_EXTRA
+    _write(out / "companies_complete.csv", cols, complete)
+    _write(out / "companies_all_confirmed.csv", cols + ["missing_fields"], [{**r, "missing_fields": ";".join(c for c in REQUIRED if not r[c]) or ("careersite_unverified" if not is_complete(r) else "")} for r in companies])
+    _write(out / "boards.csv", cols, rows)
+    _write(out / "company_boards.csv", ["company_id", "board_id", "ats_system", "ats_code", "role"], links)
+    _write(out / "unresolved_boards.csv", cols, unresolved)
+    _write(out / "website_rule_changes.csv", ["board_id", "ats_system", "ats_code", "identity_status", "company_name", "website_url", "reason"], rule_changes)
+    counts = {
+        "run": run,
+        "candidate_boards_in_run": len(rows),
+        "live_boards": sum(1 for r in rows if r["verification_status"] in LIVE),
+        "identity_confirmed_live_boards": len(confirmed),
+        "unique_companies": len(companies),
         "complete_companies": len(complete),
-        "complete_unique_websites": len({host_of(r["website_url"]) for r in complete}),
-        "incomplete_companies": len(incomplete),
-        "complete_by_ats": dict(Counter(r["ats_system"] for r in complete)),
-        "live_by_ats": dict(Counter(r["ats_system"] for r in kept)),
-        "completeness_live": completeness(kept),
-        "missing_field_counts": dict(Counter(f for r in incomplete for f in r["missing_fields"].split(";") if f)),
-        "country_complete": countries(complete),
-        "country_live": countries(kept),
-        "sources_complete": {k: dict(Counter(r[k] for r in complete)) for k in ("name_source", "website_source", "linkedin_source", "description_source", "country_source")},
-        "linkedin_conflicts_dropped": linkedin_conflicts,
-        "shared_descriptions_dropped": shared_descriptions,
-        "boards_merged_into_companies": len(extra_boards),
-        "same_name_not_merged": len(same_name),
-        "same_name_not_merged_in_deliverable": sum(1 for r in same_name if not missing_fields(r)),
-        "post_validation_rejects": dict(reject_reasons),
-        "source_overlap": source_overlap,
-        "rejected_rows_total": len(rejects),
+        "boards_by_outcome": dict(sorted(Counter(r["verification_status"] for r in rows).items())),
+        "identity_by_status": dict(sorted(Counter(r["identity_status"] for r in rows).items())),
+        "websites_dropped_by_current_rules": dict(sorted(Counter(r["reason"] for r in rule_changes).items())),
     }
-    # A run dir keeps its own stats so a new run never rewrites data/intermediate.
-    stats_dir = Path(run_dir) if run_dir is not None else dirs["intermediate"]
-    (stats_dir / "export_stats.json").write_text(json.dumps(export_stats, indent=2))
-    print(
-        f"[export] live boards={len(live)} companies={len(kept)} complete={len(complete)} "
-        f"incomplete={len(incomplete)} rejects={dict(reject_reasons)}"
-    )
-    return export_stats
+    (out / "counts.json").write_text(json.dumps(counts, indent=1, sort_keys=True) + "\n")
+    digests = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(out.iterdir())}
+    (out / "SHA256SUMS").write_text("".join(f"{h}  {n}\n" for n, h in digests.items()))
+    return counts
+
+
+def _write(path: Path, cols: list[str], rows: list[dict]) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore", lineterminator="\n")
+        w.writeheader()
+        w.writerows(rows)
+
+
+EXTRA = ["country", "verification_status", "verification_date", "verification_endpoint", "jobs_count",
+         "identity_status", "identity_basis", "identity_conflicts", "run"]
+BOARD_COLS = ["board_id", "ats_system", "ats_code", "region", "sources", "run", "identity_status", "identity_basis", "identity_conflicts",
+              "verification_status", "verification_date", "verification_endpoint", "jobs_count", "company_name",
+              "description", "linkedin_url", "website_url", "careersite_url", "careersite_evidence", "country"]
+
+
+def _latest_identity_per_board(conn, runs: list[str]) -> dict[int, dict]:
+    """Return identity row (newest run) per board across the given runs, joined with boards for ats/code."""
+    qmarks = ",".join("?" * len(runs))
+    q = (f"SELECT i.*, b.ats, b.code FROM identities i JOIN boards b ON b.id=i.board_id JOIN"
+         f" (SELECT board_id, MAX(decided_at || '|' || run) AS pick FROM identities WHERE run IN ({qmarks}) GROUP BY board_id) t"
+         f" ON i.board_id=t.board_id AND (i.decided_at || '|' || i.run)=t.pick")
+    id_rows = {r["board_id"]: r for r in conn.execute(q, runs)}
+    return id_rows
+
+
+def _latest_field_evidence_per_board_field(conn, runs: list[str]) -> dict[tuple[int, str], dict]:
+    """Return newest verified field_evidence per (board, field) across runs."""
+    qmarks = ",".join("?" * len(runs))
+    q = (f"SELECT e.* FROM field_evidence e JOIN"
+         f" (SELECT board_id, field, MAX(observed_at || '|' || id) AS pick FROM field_evidence WHERE run IN ({qmarks}) AND status='verified' GROUP BY board_id, field) t"
+         f" ON e.board_id=t.board_id AND e.field=t.field AND (e.observed_at || '|' || e.id)=t.pick")
+    ev_rows = {}
+    for r in conn.execute(q, runs):
+        ev_rows[(r["board_id"], r["field"])] = r
+    return ev_rows
+
+
+def decided_rows(conn, runs: list[str]) -> list[dict]:
+    """One merged row per board: newest identity run + per-field newest verified evidence across all runs."""
+    # Get newest identity per board (includes board_id, status, name, basis, ats, code, etc.)
+    id_map = _latest_identity_per_board(conn, runs)
+    regions = {r[0]: r[1] for r in conn.execute("SELECT id, region FROM boards")}
+    # Get newest verified evidence per (board, field) across all runs
+    ev_map = _latest_field_evidence_per_board_field(conn, runs)
+    # Sources per board
+    srcs = defaultdict(list)
+    for r in conn.execute("SELECT DISTINCT sr.board_id, s.name FROM source_rows sr JOIN sources s ON s.id=sr.source_id WHERE sr.board_id IS NOT NULL ORDER BY sr.board_id, s.name"):
+        srcs[r[0]].append(r[1])
+    
+    out = []
+    for bid in sorted(id_map):
+        ident = id_map[bid]
+        run = ident["run"]
+        row = {"board_id": bid, "identity_status": ident["status"], "identity_basis": ident["basis"] or "",
+               "identity_conflicts": ident["conflicts"] or "", "run": run, "region": regions.get(bid) or "",
+               "ats_system": ident["ats"], "ats_code": ident["code"],
+               "company_name": "", "description": "", "linkedin_url": "", "website_url": "",
+               "careersite_url": "", "careersite_evidence": "", "country": "",
+               "website_method": "", "linkedin_method": "", "description_method": "",
+               "verification_status": "", "verification_date": "", "verification_endpoint": "", "jobs_count": "",
+               "sources": ";".join(srcs.get(bid, []))}
+        
+        # Newest verification per board across runs (verification origin = run)
+        qmarks = ",".join("?" * len(runs))
+        v = conn.execute(
+            f"SELECT v.* FROM verifications v JOIN"
+            f" (SELECT board_id, MAX(checked_at) AS at_ FROM verifications WHERE origin IN ({qmarks}) GROUP BY board_id) t"
+            f" ON v.board_id=t.board_id AND v.checked_at=t.at_ WHERE v.board_id=?", runs + [bid]
+        ).fetchone()
+        if v:
+            row["verification_status"] = v["outcome"]
+            row["verification_date"] = v["checked_at"]
+            row["verification_endpoint"] = v["endpoint"] or ""
+            row["jobs_count"] = "" if v["jobs_count"] is None else v["jobs_count"]
+        
+        # Fields from evidence (only if identity confirmed and status verified)
+        FIELD_FOR = {"name": "company_name", "description": "description", "linkedin_url": "linkedin_url",
+                     "website_url": "website_url", "careersite_url": "careersite_url",
+                     "ats_system": "ats_system", "ats_code": "ats_code", "country": "country"}
+        if row["identity_status"] == CONFIRMED:
+            for field, col in FIELD_FOR.items():
+                key = (bid, field)
+                if key in ev_map:
+                    ev = ev_map[key]
+                    row[col] = ev["value"]
+                    if field in ("website_url", "linkedin_url", "description"):
+                        row[field.split("_")[0] + "_method"] = ev["method"]
+                    if field == "careersite_url":
+                        row["careersite_evidence"] = f"{ev['status']}:{ev['method']}"
+                        row["_careersite_landed"] = ev["evidence_url"] or ""
+                    if field == "country":
+                        row["_country_method"] = ev["method"]
+                    if field == "website_url":
+                        row["_website_evidence"] = {"method": ev["method"], "url": ev["evidence_url"] or "",
+                                                    "evidence_text": ev["evidence_text"] or "",
+                                                    "status": ev["status"]}
+        
+        # Website rule re-check on merged website evidence (if present)
+        if row.get("_website_evidence"):
+            w = row["_website_evidence"]
+            # Build verification-style dict for website_rule_failure: value = verified website URL
+            w_legacy = {"value": row["website_url"], "method": w["method"], "evidence_url": w["url"], "evidence_text": w["evidence_text"] or ""}
+            # Use identity name from the identity row
+            ident_name = ident["name"] if ident["name"] else None
+            rule = website_rule_failure(conn, w_legacy, ident_name)
+            if rule:
+                drop_website(row)
+        
+        # If identity not confirmed, wipe company name (per legacy behavior)
+        if row["identity_status"] != CONFIRMED:
+            row["company_name"] = ""
+        
+        row.pop("_website_evidence", None)  # internal, not exported
+        out.append(row)
+    return out
+
+
+def build_export(conn, runs: list[str], out_dir: Path) -> dict:
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise FileExistsError(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = decided_rows(conn, runs)
+    confirmed = [r for r in rows if r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE]
+    clusters = cluster_companies([{"name": r["company_name"], "website_url": r["website_url"], "website_verified": bool(r["website_url"]),
+                                   "linkedin_url": r["linkedin_url"], "ats_system": r["ats_system"], "ats_code": r["ats_code"]}
+                                  for r in confirmed])
+    companies, links, merges = [], [], []
+    for g in clusters:
+        members = sorted((confirmed[i] for i in g), key=lambda r: (not is_complete(r), -sum(bool(r[c]) for c in REQUIRED),
+                                                                   -(int(r["jobs_count"] or 0)), r["ats_system"], r["ats_code"].casefold()))
+        primary = dict(members[0])
+        cid = f"c{primary['board_id']}"
+        primary["company_id"] = cid
+        primary["other_boards"] = ";".join(f"{m['ats_system']}:{m['ats_code']}" for m in members[1:])
+        companies.append(primary)
+        if len(members) > 1:
+            merges.append({"company_id": cid, "name": primary["company_name"],
+                           "primary_board": f"{primary['ats_system']}:{primary['ats_code']}",
+                           "merged_boards": ";".join(f"{m['ats_system']}:{m['ats_code']}" for m in members[1:]),
+                           "primary_website": primary["website_url"], "primary_linkedin": primary["linkedin_url"],
+                           "shared_website": len({m["website_url"] for m in members if m["website_url"]}) == 1 and bool(members[-1]["website_url"]),
+                           "shared_linkedin": len({m["linkedin_url"] for m in members if m["linkedin_url"]}) == 1 and bool(members[-1]["linkedin_url"]),
+                           "boards_count": len(members)})
+    companies.sort(key=lambda r: (r["company_name"].casefold(), r["ats_system"], r["ats_code"].casefold()))
+    merges.sort(key=lambda r: r["company_id"])
+    complete = [r for r in companies if is_complete(r)]
+    incomplete = [r for r in companies if not is_complete(r)]
+    unresolved = [r for r in rows if r["identity_status"] in ("identity_unresolved", "identity_mismatch") and r["verification_status"] in LIVE]
+
+    # possible duplicates: same company name, different company records
+    seen_names: dict[str, list[str]] = defaultdict(list)
+    for r in companies:
+        seen_names[r["company_name"].casefold()].append(f"{r['ats_system']}:{r['ats_code']}:{r['company_id']}")
+    possible = [{"name_form": name, "instances": ";".join(sorted(instances)), "count": len(instances)}
+                for name, instances in sorted(seen_names.items()) if len(instances) > 1]
+
+    # verification evidence trail: every field_evidence row for boards decided in the runs
+    qmarks = ",".join("?" * len(runs))
+    evidence_q = ("SELECT e.board_id, e.field, e.value, e.method, e.evidence_url, e.evidence_text, e.status,"
+                  " e.observed_at, e.run, b.ats, b.code FROM field_evidence e JOIN boards b ON b.id=e.board_id"
+                  f" WHERE e.run IN ({qmarks}) ORDER BY e.board_id, e.field, e.observed_at, e.run")
+    evidence = [{"board_id": r[0], "field": r[1], "value": r[2], "method": r[3], "evidence_url": r[4],
+                 "evidence_text": r[5], "status": r[6], "observed_at": r[7], "run": r[8],
+                 "ats_system": r[9], "ats_code": r[10]} for r in conn.execute(evidence_q, runs)]
+
+    # rejected records: every source row the adapters refused (global, not run-specific)
+    rejects_q = ("SELECT s.name AS source_name, sr.row_ref, sr.ats, sr.code, sr.region, sr.name, sr.reject_reason, sr.reject_detail"
+                 " FROM source_rows sr JOIN sources s ON s.id=sr.source_id WHERE sr.board_id IS NULL ORDER BY s.name, sr.row_ref")
+    rejects = [{"source_name": r[0], "row_ref": r[1], "ats_system": r[2], "ats_code": r[3], "region": r[4] or "",
+                "name_from_source": r[5] or "", "reject_reason": r[6] or "", "reject_detail": r[7] or ""}
+               for r in conn.execute(rejects_q)]
+
+    # unresolved: candidate boards the ATS serves as live but whose company identity stays unconfirmed
+    unresolved_rows = []
+    for r in unresolved:
+        unresolved_rows.append({
+            "board_id": r["board_id"], "ats_system": r["ats_system"], "ats_code": r["ats_code"], "region": r["region"],
+            "sources": r["sources"], "run": r["run"], "identity_status": r["identity_status"], "identity_basis": r["identity_basis"],
+            "verification_status": r["verification_status"], "verification_date": r["verification_date"],
+            "endpoint_public_jobs": canonical_board_url(r["ats_system"], r["ats_code"], r["region"]),
+            "careersite_url": r["careersite_url"], "website_url": r["website_url"]})
+
+    # source breakdown across the whole store
+    breakdown = []
+    for s in conn.execute("SELECT id, name, url, rows_read, imported_at FROM sources ORDER BY name").fetchall():
+        sid, name = s["id"], s["name"]
+        pairs_q = ("SELECT COUNT(DISTINCT COALESCE(board_id, ats||'|'||code)) FROM source_rows WHERE source_id=?")
+        boards_q = ("SELECT COUNT(DISTINCT sr.board_id) FROM source_rows sr WHERE sr.source_id=? AND sr.board_id IN"
+                    f" (SELECT board_id FROM identities i WHERE i.run IN ({qmarks}))")
+        records = conn.execute("SELECT COUNT(*) FROM source_rows WHERE source_id=?", (sid,)).fetchone()[0]
+        boards_total = conn.execute(pairs_q, (sid,)).fetchone()[0]
+        decided = conn.execute(boards_q, (sid, *runs)).fetchone()[0]
+        live_qmarks = ",".join("?" * len(LIVE))
+        live = conn.execute("SELECT COUNT(DISTINCT sr.board_id) FROM source_rows sr JOIN verifications v ON v.board_id=sr.board_id"
+                            f" WHERE sr.source_id=? AND v.outcome IN ({live_qmarks}) AND v.origin IN ({qmarks})",
+                            (sid, *LIVE, *runs)).fetchone()[0]
+        breakdown.append({"source": name, "url": s["url"] or "", "rows_read": s["rows_read"], "records": records,
+                          "rejects": records - conn.execute("SELECT COUNT(*) FROM source_rows WHERE source_id=? AND board_id IS NOT NULL", (sid,)).fetchone()[0],
+                          "boards_contributed": boards_total, "boards_decided": decided, "live_boards": live,
+                          "imported_at": s["imported_at"]})
+
+    # spot check: deterministic 1-in-N sample of complete companies, review-ready
+    n = max(1, len(complete) // 30) if complete else 0
+    spots = []
+    for r in complete[:: n or 1]:
+        spots.append({"company_name": r["company_name"], "description": r["description"], "linkedin_url": r["linkedin_url"],
+                      "website_url": r["website_url"], "careersite_url": r["careersite_url"],
+                      "ats_board": f"{r['ats_system']}:{r['ats_code']}", "website_method": r["website_method"],
+                      "linkedin_method": r["linkedin_method"], "careersite_evidence": r["careersite_evidence"],
+                      "country": r["country"], "jobs_count": r["jobs_count"]})
+    spot = {"sample_n": len(spots), "method": "every Nth complete company after sort (N=%d)" % n}
+
+    cols = REQUIRED + EXTRA
+    _write(out_dir / "companies_verified.csv", REQUIRED, complete)
+    _write(out_dir / "companies_all_confirmed.csv", cols + ["missing_fields", "other_boards"],
+           [{**r, "missing_fields": ";".join(c for c in REQUIRED if not r[c]) or ("careersite_unverified" if not is_complete(r) else "")} for r in companies])
+    _write(out_dir / "companies_incomplete.csv", cols + ["missing_fields", "other_boards"],
+           [{**r, "missing_fields": ";".join(c for c in REQUIRED if not r[c]) or ("careersite_unverified" if not is_complete(r) else "")} for r in incomplete])
+    _write(out_dir / "boards_all.csv", BOARD_COLS, rows)
+    _write(out_dir / "duplicates_and_merges.csv", ["company_id", "name", "primary_board", "merged_boards", "primary_website",
+                                                   "primary_linkedin", "shared_website", "shared_linkedin", "boards_count"], merges)
+    _write(out_dir / "possible_duplicates.csv", ["name_form", "instances", "count"], possible)
+    _write(out_dir / "verification_evidence.csv",
+           ["board_id", "ats_system", "ats_code", "field", "status", "value", "method", "evidence_url", "evidence_text", "observed_at", "run"],
+           evidence)
+    _write(out_dir / "rejected_records.csv",
+           ["source_name", "row_ref", "ats_system", "ats_code", "region", "name_from_source", "reject_reason", "reject_detail"], rejects)
+    _write(out_dir / "unresolved_records.csv",
+           ["board_id", "ats_system", "ats_code", "region", "sources", "run", "identity_status", "identity_basis",
+            "verification_status", "verification_date", "endpoint_public_jobs", "careersite_url", "website_url"], unresolved_rows)
+    _write(out_dir / "source_breakdown.csv",
+           ["source", "url", "rows_read", "records", "rejects", "boards_contributed", "boards_decided", "live_boards", "imported_at"], breakdown)
+    _write(out_dir / "spot_check.csv", ["company_name", "description", "linkedin_url", "website_url", "careersite_url",
+                                        "ats_board", "website_method", "linkedin_method", "careersite_evidence", "country", "jobs_count"], spots)
+
+    counts = {
+        "runs": runs,
+        "boards_decided": len(rows),
+        "live_boards": sum(1 for r in rows if r["verification_status"] in LIVE),
+        "boards_not_live": len(rows) - sum(1 for r in rows if r["verification_status"] in LIVE),
+        "identity_confirmed_live_boards": len(confirmed),
+        "unique_companies": len(companies),
+        "complete_companies": len(complete),
+        "incomplete_companies": len(incomplete),
+        "unresolved_live_boards": len(unresolved),
+        "merged_companies": len(merges),
+        "evidence_rows": len(evidence),
+        "rejected_records": len(rejects),
+        "source_breakdown": len(breakdown),
+        "spot_check": spot,
+        "boards_by_ats": {},
+        "companies_by_ats": {},
+        "boards_by_outcome": dict(sorted(Counter(r["verification_status"] for r in rows).items())),
+        "identity_by_status": dict(sorted(Counter(r["identity_status"] for r in rows).items())),
+        "sources": sorted({s for r in rows for s in (r["sources"] or "").split(";") if s}),
+    }
+    for ats in sorted({r["ats_system"] for r in rows}):
+        g = [r for r in rows if r["ats_system"] == ats]
+        cs = [r for r in companies if r["ats_system"] == ats]
+        counts["boards_by_ats"][ats] = {
+            "boards": len(g),
+            "live": sum(1 for r in g if r["verification_status"] in LIVE),
+            "not_live": sum(1 for r in g if r["verification_status"] not in LIVE),
+            "identity_confirmed_live": sum(1 for r in g if r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE),
+            "unique_companies": len(cs),
+            "complete_companies": sum(1 for r in cs if is_complete(r)),
+        }
+        counts["companies_by_ats"][ats] = {
+            "unique_companies": len(cs),
+            "complete_companies": sum(1 for r in cs if is_complete(r)),
+            "incomplete_companies": sum(1 for r in cs if not is_complete(r)),
+            "merged_companies": sum(1 for m in merges if m["primary_board"].startswith(f"{ats}:")),
+        }
+    (out_dir / "counts.json").write_text(json.dumps(counts, indent=1, sort_keys=True) + "\n")
+    digests = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(out_dir.iterdir())}
+    (out_dir / "SHA256SUMS").write_text("".join(f"{h}  {n}\n" for n, h in digests.items()))
+    return counts
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="company_dataset.export")
+    p.add_argument("--db", required=True)
+    which = p.add_mutually_exclusive_group(required=True)
+    which.add_argument("--run", help="export one run")
+    which.add_argument("--runs", help="comma-separated run labels to merge")
+    p.add_argument("--out", required=True)
+    a = p.parse_args(argv)
+    conn = store.connect(a.db)
+    counts = run_export(conn, a.run, Path(a.out)) if a.run else build_export(conn, [r for r in a.runs.split(",") if r], Path(a.out))
+    print(json.dumps(counts, indent=1))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,7 +1,7 @@
 import csv
 import json
 
-from company_dataset.report import run_report
+from company_dataset.legacy.report import run_report
 
 
 def test_report_states_counts_gap_duplicates_and_sources(tmp_path):
@@ -141,7 +141,7 @@ def test_report_includes_unresolved_dead_reasons_per_ats(tmp_path):
 
 def test_report_no_overwrite_check(tmp_path):
     """Test that report fails if quality_report.md already exists."""
-    from company_dataset.report import run_report
+    from company_dataset.legacy.report import run_report
     
     dirs = {k: tmp_path / k for k in ("raw", "cache", "intermediate", "output", "reports")}
     for d in dirs.values():

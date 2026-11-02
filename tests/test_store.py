@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from company_dataset import store, store_import
+from company_dataset import ingest as store_import, store
 from company_dataset.models import Reject, SourceMeta, SourceRecord
 
 

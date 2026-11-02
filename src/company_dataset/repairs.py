@@ -20,12 +20,13 @@ from company_dataset.enrichment import (
     board_from_validation, clean_description, fetch_page, is_english, landing_site, linkedin_url,
 )
 from company_dataset.http import HttpClient
+from company_dataset.enrich import board_ownership, official_landing, verify_homepage, website_supported
 from company_dataset.identity import (
-    CONFIRMED, careers_branded_domain, domain_compatible, linkedin_compatible, registrable_domain, resolve_identity,
+    CONFIRMED, careers_branded_domain, domain_compatible, linkedin_compatible, name_claims, registrable_domain, resolve_identity,
 )
+from company_dataset.ingest import load_boards
 from company_dataset.models import Candidate, utc_now
 from company_dataset.normalize import CORE_ATS, SMARTRECRUITERS, canonical_board_url, clean_website, normalize_linkedin
-from company_dataset.pilot import board_ownership, load_boards, name_claims, official_landing, verify_homepage, website_supported
 from company_dataset.validate import SR_NO_SUCH_COMPANY, smartrecruiters_generic_page
 from company_dataset.verification import INVALID_IDENTIFIER, LIVE, VERIFIED_LIVE_ZERO_JOBS
 

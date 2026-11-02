@@ -1,14 +1,15 @@
-"""Idempotent import of source files, legacy validation caches, page caches and QA re-checks."""
+"""Ingest: idempotent import of source files, validation caches, page caches and QA re-checks, and which boards a run works on."""
 from __future__ import annotations
 
 import hashlib
 import json
+import random
 import sqlite3
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from company_dataset import store
-from company_dataset.export import _validation_endpoint
+from company_dataset.normalize import validation_endpoint
 from company_dataset.sources import SOURCES
 from company_dataset.verification import classify
 
@@ -74,7 +75,7 @@ def _insert_check(conn, bid: int, ats: str, code: str, rec: dict, origin: str) -
         " jobs_count, code_validated, region_answered, provider_name, provider_identifier, provider_website,"
         " provider_description, provider_country) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
-            bid, rec["checked_at"], origin, _validation_endpoint(ats, code, rec), rec.get("http_status"),
+            bid, rec["checked_at"], origin, validation_endpoint(ats, code, rec), rec.get("http_status"),
             classify(rec.get("status"), rec.get("http_status"), rec.get("error"), rec.get("jobs_count")),
             rec.get("status"), rec.get("error"), rec.get("jobs_count"), rec.get("code_validated"), rec.get("region_answered"),
             rec.get("company_name"), rec.get("company_identifier"), rec.get("website_url"), rec.get("description"), rec.get("country"),
@@ -143,14 +144,67 @@ def import_pages(conn: sqlite3.Connection, path: Path) -> dict:
     return dict(stats)
 
 
+def load_boards(conn) -> list[dict]:
+    latest = store.latest_verifications(conn)
+    rows = {}
+    for r in conn.execute("SELECT id, ats, code, code_key, region FROM boards"):
+        v = latest.get(r["id"])
+        rows[r["id"]] = {"id": r["id"], "ats": r["ats"], "code": r["code"], "region": r["region"],
+                         "prior": v["outcome"] if v else "unchecked", "codes": [], "names": [], "sources": []}
+    for r in conn.execute("SELECT sr.board_id, sr.code, sr.name, s.name AS source FROM source_rows sr JOIN sources s ON s.id=sr.source_id"
+                          " WHERE sr.board_id IS NOT NULL ORDER BY sr.source_id, sr.seq"):
+        b = rows[r["board_id"]]
+        if r["code"] not in b["codes"]:
+            b["codes"].append(r["code"])
+        if r["source"] not in b["sources"]:
+            b["sources"].append(r["source"])
+        if r["name"] and (r["source"], r["name"]) not in b["names"]:
+            b["names"].append((r["source"], r["name"]))
+    return list(rows.values())
+
+
+def stratified_sample(boards: list[dict], per_ats: int, seed: int) -> list[dict]:
+    """Per ATS, proportional allocation over (prior verification state, first source); random within strata."""
+    rnd = random.Random(seed)
+    out = []
+    by_ats = defaultdict(list)
+    for b in boards:
+        by_ats[b["ats"]].append(b)
+    for ats in sorted(by_ats):
+        group = sorted(by_ats[ats], key=lambda b: b["code"].casefold())
+        n = min(per_ats, len(group))
+        strata = defaultdict(list)
+        for b in group:
+            strata[(b["prior"], b["sources"][0] if b["sources"] else "")].append(b)
+        quotas = {k: n * len(v) / len(group) for k, v in strata.items()}
+        alloc = {k: int(q) for k, q in quotas.items()}
+        for k in sorted(quotas, key=lambda k: (-(quotas[k] - alloc[k]), str(k)))[: n - sum(alloc.values())]:
+            alloc[k] += 1
+        for k in sorted(strata, key=str):
+            members = strata[k]
+            out.extend(rnd.sample(members, alloc[k]))
+    return out
+
+
+def interleave(boards: list[dict]) -> list[dict]:
+    by_ats = defaultdict(list)
+    for b in boards:
+        by_ats[b["ats"]].append(b)
+    queues = [by_ats[k] for k in sorted(by_ats)]
+    out = []
+    for i in range(max((len(q) for q in queues), default=0)):
+        out.extend(q[i] for q in queues if i < len(q))
+    return out
+
+
 def main(argv=None) -> int:
-    """python -m company_dataset.store_import --db data/store.db --raw data/raw_2026-10-31
+    """python -m company_dataset.ingest --db data/store.db --raw data/raw_2026-10-31
        --cache ORIGIN=path/validation.json ... --pages path/pages.json ... --qa ORIGIN=path.jsonl ..."""
     import argparse
 
     from company_dataset.models import utc_now
 
-    p = argparse.ArgumentParser(prog="company_dataset.store_import")
+    p = argparse.ArgumentParser(prog="company_dataset.ingest")
     p.add_argument("--db", required=True)
     p.add_argument("--raw", required=True)
     p.add_argument("--cache", action="append", default=[], help="ORIGIN=path to a legacy validation.json")

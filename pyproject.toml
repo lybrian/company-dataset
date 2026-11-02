@@ -13,7 +13,8 @@ dependencies = ["requests>=2.31", "duckdb>=1.1", "langdetect>=1.0.9"]
 dev = ["pytest>=8"]
 
 [project.scripts]
-company-dataset = "company_dataset.cli:main"
+company-dataset = "company_dataset.pipeline:main"
+company-dataset-legacy = "company_dataset.legacy.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

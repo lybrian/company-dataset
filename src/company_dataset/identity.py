@@ -10,7 +10,9 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from company_dataset.enrichment import clean_name, names_match
+from company_dataset import careersite
+from company_dataset.enrichment import board_from_validation, clean_name, names_match, vendor_names
+from company_dataset.models import Candidate
 from company_dataset.normalize import host_of
 
 CONFIRMED = "identity_confirmed"
@@ -283,6 +285,49 @@ def _code_shaped(name: str, code_key: str) -> bool:
     """The name's letters are the code's (or, for one word, part of it): "10a Labs" / 10alabs, "HubSpot" / hubspotjobs."""
     key = re.sub(r"[^a-z0-9]", "", name.lower())
     return bool(key) and (key == code_key or (" " not in name.strip() and key in code_key))
+
+
+def claim_names(res: dict) -> list[str]:
+    return [c.name for c in name_claims(res, homepage=None)]
+
+
+def name_claims(res: dict, homepage: dict | None, homepage_independent: bool = False, wikidata_label: str | None = None) -> list[NameClaim]:
+    b, v = res["board"], res["validation"]
+    claims = []
+    if v.get("company_name"):
+        claims.append(NameClaim(v["company_name"], VENDOR_API, b["ats"] + "_api"))
+    if (res.get("vendor_identity") or {}).get("name"):
+        raw = res["vendor_identity"]["name"]
+        claims.append(NameClaim(raw, VENDOR_API, b["ats"] + "_job_hiring_organization", raw))
+    cand = Candidate(ats=b["ats"], codes=b["codes"] or [b["code"]], region=b["region"])
+    board = board_from_validation(cand, v)
+    if b["ats"] not in ("greenhouse",):
+        for n in vendor_names(board, v, res.get("board_page")):
+            if not v.get("company_name") or n != v["company_name"]:
+                claims.append(NameClaim(n, VENDOR_PAGE, "hosted_page"))
+    if res.get("board_extract"):
+        for n, basis in careersite.board_page_names(res["board_extract"], b["code"]):
+            claims.append(NameClaim(n, VENDOR_PAGE, basis))
+    for source, n in b["names"]:
+        claims.append(NameClaim(n, SOURCE_LIST, source))
+    if homepage and homepage_independent:
+        for n in brand_segments(homepage):
+            claims.append(NameClaim(n, HOMEPAGE, "homepage"))
+    if wikidata_label:
+        claims.append(NameClaim(wikidata_label, STRUCTURED, "wikidata"))
+    return claims
+
+
+def company_names_for_homepage(res: dict) -> list[str]:
+    """Names a homepage is checked against: the provisional identity from vendor/page/list
+    claims, so a page brand that differs from the vendor's ("Tripstack" on an "Etraveli Group"
+    board) cannot pick the website. Without any vendor or page name, list names are used."""
+    claims = name_claims(res, homepage=None)
+    ident = resolve_identity(claims, res["board"]["code"])
+    strong = [c for c in claims if c.kind in (VENDOR_API, VENDOR_PAGE)]
+    if ident.name and strong:
+        return [ident.name] + [c.name for c in strong if names_compatible(c.name, ident.name) and c.name != ident.name]
+    return [c.name for c in claims]
 
 
 # ---------------------------------------------------------------------------

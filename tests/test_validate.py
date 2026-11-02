@@ -706,7 +706,7 @@ def test_validation_stats_reasons_are_per_ats_and_include_all_four(tmp_path):
 
 
 def test_cli_ats_filter_is_passed(monkeypatch):
-    import company_dataset.cli as cli
+    import company_dataset.legacy.cli as cli
 
     captured = {}
     monkeypatch.setattr(cli, "resolve_dirs", lambda data_dir: {})
@@ -716,7 +716,7 @@ def test_cli_ats_filter_is_passed(monkeypatch):
 
 
 def test_cli_rate_limit_overrides_are_passed(monkeypatch):
-    import company_dataset.cli as cli
+    import company_dataset.legacy.cli as cli
 
     for var in (
         "COMPANY_DATASET_SMARTRECRUITERS_MAX_CONCURRENT",
@@ -742,7 +742,7 @@ def test_cli_rate_limit_overrides_are_passed(monkeypatch):
 
 
 def test_cli_rejects_unknown_ats(monkeypatch):
-    import company_dataset.cli as cli
+    import company_dataset.legacy.cli as cli
 
     monkeypatch.setattr(cli, "resolve_dirs", lambda data_dir: {})
     with pytest.raises(SystemExit):

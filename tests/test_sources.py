@@ -303,7 +303,7 @@ HARVEST_ONLY = ("africa_ats", "builder_jobs", "commoncrawl_gapfill", "jobanalyti
 
 def test_harvested_adapters_are_registered_but_never_downloaded(tmp_path):
     from company_dataset.config import resolve_dirs
-    from company_dataset.download import run_download
+    from company_dataset.legacy.download import run_download
     from company_dataset.http import HttpClient
     from company_dataset.sources import SOURCES
 
@@ -326,7 +326,7 @@ def test_harvested_adapters_are_registered_but_never_downloaded(tmp_path):
 def test_harvested_adapter_with_no_raw_file_reports_file_missing(tmp_path):
     from company_dataset import store
     from company_dataset.sources import africa_ats
-    from company_dataset.store_import import import_sources
+    from company_dataset.ingest import import_sources
 
     conn = store.connect(tmp_path / "s.db")
     report = import_sources(conn, tmp_path, "t", modules=[africa_ats])

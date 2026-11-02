@@ -1,6 +1,7 @@
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
@@ -139,3 +140,16 @@ class HttpClient:
         import random
 
         self.sleep(self.backoff_base**attempt + random.random() * 0.5)
+
+
+def stream_to(client: HttpClient, url: str, dest: Path) -> int:
+    """Stream a URL to disk as bytes; returns the HTTP status."""
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    with client.session.get(url, timeout=client.timeout, stream=True) as resp:
+        if resp.status_code != 200:
+            return resp.status_code
+        with open(tmp, "wb") as fh:
+            for chunk in resp.iter_content(1 << 20):
+                fh.write(chunk)
+    tmp.replace(dest)
+    return 200

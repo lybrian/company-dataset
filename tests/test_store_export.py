@@ -1,7 +1,7 @@
 import pytest
 
 from company_dataset import store
-from company_dataset.store_export import run_export
+from company_dataset.export import run_export
 
 
 def _seed(conn):

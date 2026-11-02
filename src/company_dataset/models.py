@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
+from pathlib import Path
 
 # The 7 business-required fields (per the project spec). `country` is additional
 # metadata, not a required field, and must never be counted toward this list.
@@ -111,3 +113,25 @@ class BoardValidation:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def load_candidates(dirs: dict) -> list[Candidate]:
+    path = Path(dirs["intermediate"]) / "candidates.csv"
+    candidates: list[Candidate] = []
+    if not path.exists():
+        return candidates
+    with open(path, newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            alt = [c for c in (row.get("alt_codes") or "").split(";") if c]
+            candidates.append(
+                Candidate(
+                    ats=row["ats"],
+                    codes=[row["code"]] + alt,
+                    region=row.get("region") or None,
+                    name=row.get("name") or None,
+                    name_source=row.get("name_source") or "",
+                    careersite_urls=[u for u in (row.get("careersite_urls") or "").split("; ") if u],
+                    sources=[s for s in (row.get("sources") or "").split("; ") if s],
+                )
+            )
+    return candidates

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from company_dataset import reference
-from company_dataset.http import HttpClient
+from company_dataset.http import HttpClient, stream_to
 from company_dataset.models import utc_now
 from company_dataset.sources import SOURCES
 
@@ -16,19 +16,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def stream_to(client: HttpClient, url: str, dest: Path) -> int:
-    """Stream a URL to disk as bytes; returns the HTTP status."""
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    with client.session.get(url, timeout=client.timeout, stream=True) as resp:
-        if resp.status_code != 200:
-            return resp.status_code
-        with open(tmp, "wb") as fh:
-            for chunk in resp.iter_content(1 << 20):
-                fh.write(chunk)
-    tmp.replace(dest)
-    return 200
 
 
 def _has_data(path: Path) -> bool:

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
-from company_dataset.build import run_build
+from company_dataset.legacy.build import run_build
 from company_dataset.config import resolve_dirs, resolve_rate_limits
-from company_dataset.download import run_download
+from company_dataset.legacy.download import run_download
 from company_dataset.enrichment import run_enrich
-from company_dataset.export import run_export
+from company_dataset.legacy.export import run_export
 from company_dataset.normalize import SUPPORTED_ATS
-from company_dataset.report import run_report
+from company_dataset.legacy.report import run_report
 from company_dataset.validate import run_validate
 
 
@@ -54,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    print("company-dataset-legacy is deprecated: use the store-backed pipeline (company-dataset).", file=sys.stderr)
     args = build_parser().parse_args(argv)
     dirs = resolve_dirs(args.data_dir)
     command = args.command

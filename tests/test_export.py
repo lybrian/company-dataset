@@ -1,7 +1,7 @@
 import csv
 import json
 
-from company_dataset.export import (
+from company_dataset.legacy.export import (
     collapse_companies,
     drop_conflicting_linkedin,
     drop_shared_descriptions,
@@ -169,7 +169,7 @@ def test_verification_endpoint_uses_correct_url_per_ats(tmp_path):
     dirs = _dirs(tmp_path)
     
     # Test with old-format cache (no code_validated)
-    from company_dataset.export import _validation_endpoint
+    from company_dataset.legacy.export import _validation_endpoint
     
     # SmartRecruiters - uses original case token in API URL
     assert _validation_endpoint("smartrecruiters", "AbbVie", {}) == "https://api.smartrecruiters.com/v1/companies/AbbVie/postings?limit=100"
@@ -195,7 +195,7 @@ def test_verification_endpoint_uses_correct_url_per_ats(tmp_path):
 def test_verification_tier_rules(tmp_path):
     """Test verification_tier logic per Stage C rules."""
     dirs = _dirs(tmp_path)
-    from company_dataset.export import _verification_tier
+    from company_dataset.legacy.export import _verification_tier
     from company_dataset.models import Candidate
     
     # Mock objects
@@ -338,7 +338,7 @@ def test_uncertain_and_dead_companies_csv_generated(tmp_path):
 
 def test_run_dir_no_overwrite_check(tmp_path):
     """Test that --run-dir fails if the directory already exists."""
-    from company_dataset.export import run_export
+    from company_dataset.legacy.export import run_export
     
     # First run should succeed
     dirs1 = _dirs(tmp_path)
@@ -361,7 +361,7 @@ def test_run_dir_no_overwrite_check(tmp_path):
 
 def test_default_mode_no_overwrite_check(tmp_path):
     """Test that default mode (no --run-dir) fails if any target file already exists."""
-    from company_dataset.export import run_export
+    from company_dataset.legacy.export import run_export
     
     # First run should succeed
     dirs1 = _dirs(tmp_path)
@@ -550,7 +550,7 @@ def test_validate_sample_is_per_ats_and_deterministic_with_seed(tmp_path):
 
 
 def test_smartrecruiters_case_variants_collapse_to_one_board(tmp_path):
-    from company_dataset.build import merge_records
+    from company_dataset.legacy.build import merge_records
     from company_dataset.models import SourceRecord
 
     records = [
@@ -580,7 +580,7 @@ def test_smartrecruiters_case_variants_collapse_to_one_board(tmp_path):
 
 
 def test_verification_tier_for_added_platforms():
-    from company_dataset.export import _verification_tier
+    from company_dataset.legacy.export import _verification_tier
     from company_dataset.models import Candidate
 
     cand = Candidate(ats="workable", codes=["botpress"], name="Botpress")
