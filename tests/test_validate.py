@@ -281,11 +281,11 @@ def test_smartrecruiters_valid_uses_total_found_and_company_identifier():
     assert session.calls == [SR_URL]
 
 
-def test_smartrecruiters_total_found_zero_is_unresolved():
+def test_smartrecruiters_total_found_zero_is_verified_live_zero_jobs():
     payload = {"offset": 0, "limit": 100, "totalFound": 0, "content": []}
     client, _ = make_client({SR_URL: FakeResponse(200, json.dumps(payload))})
     result = BoardValidator(client).validate_one(cand("smartrecruiters", "AbbVie"))
-    assert result.status == "unresolved"
+    assert result.status == "valid"
     assert result.error == "total_found_zero"
     assert result.jobs_count == 0
     assert result.http_status == 200
@@ -610,11 +610,10 @@ def test_run_validate_filters_ats_and_records_unresolved_reasons(tmp_path):
     assert stats["checked"] == 2
     assert stats["by_ats"] == {
         "breezy": {"unresolved": 1},
-        "smartrecruiters": {"unresolved": 1},
+        "smartrecruiters": {"valid": 1},
     }
     assert stats["unresolved_reasons"] == {
         "breezy": {"exists_no_identity": 1},
-        "smartrecruiters": {"total_found_zero": 1},
     }
     assert not any("lever" in url for url in session.calls)
     saved = json.loads((dirs["intermediate"] / "validation_stats.json").read_text(encoding="utf-8"))
@@ -659,7 +658,6 @@ def test_validation_stats_reasons_are_per_ats_and_include_all_four(tmp_path):
         },
         "smartrecruiters": {
             "company_identifier_mismatch": 1,
-            "total_found_zero": 1,
         },
     }
     saved = json.loads((dirs["intermediate"] / "validation_stats.json").read_text(encoding="utf-8"))

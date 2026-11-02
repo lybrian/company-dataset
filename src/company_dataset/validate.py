@@ -295,7 +295,7 @@ class BoardValidator:
             ):
                 return BoardValidation(ats=cand.ats, code=cand.code, status=UNRESOLVED, http_status=200, error="unexpected_schema", checked_at=now)
             if total_found == 0:
-                return BoardValidation(ats=cand.ats, code=cand.code, status=UNRESOLVED, http_status=200, jobs_count=0, error="total_found_zero", checked_at=now)
+                return BoardValidation(ats=cand.ats, code=cand.code, status="valid", http_status=200, jobs_count=0, error="total_found_zero", checked_at=now)
             if not content:
                 return BoardValidation(ats=cand.ats, code=cand.code, status=UNRESOLVED, http_status=200, error="unexpected_schema", checked_at=now)
             identifiers = []
