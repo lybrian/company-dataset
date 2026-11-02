@@ -115,3 +115,38 @@ def test_display_name_prefers_board_level_names_over_titles_and_legal_entities()
     assert (r.status, r.name) == (CONFIRMED, "DuPont")
     r = resolve_identity([NameClaim("Home ID-ware English", HOMEPAGE), NameClaim("ID-ware", STRUCTURED)], code="idw")
     assert r.name == "ID-ware"
+
+
+def test_list_name_with_information_beyond_the_slug_corroborates_the_vendor():
+    # Regression: these boards stayed unresolved because the name sits inside the code.
+    for vendor, code in (("HubSpot", "hubspotjobs"), ("Interfold", "applytointerfold"), ("10a Labs", "10alabs"), ("Orbit Fab", "orbitfab")):
+        r = resolve_identity([NameClaim(vendor, VENDOR_API), NameClaim(vendor, SOURCE_LIST, "lastroundai")], code=code)
+        assert (r.status, r.name) == (CONFIRMED, vendor), code
+        assert "list" in r.basis
+
+
+def test_list_name_reproducible_from_the_slug_does_not_corroborate():
+    # Title-casing or swapping separators needs no knowledge of the company.
+    for name, code in (("Alcazar Energy", "alcazar-energy"), ("Foo Bar", "foo_bar"), ("Ether Fi", "ether.fi"), ("d-Matrix", "d-Matrix"),
+                       ("Attendi", "attendi"), ("Careeropportunities", "ecc.wd5/careeropportunities")):
+        r = resolve_identity([NameClaim(name, VENDOR_API), NameClaim(name, SOURCE_LIST, "joa")], code=code)
+        assert r.status == UNRESOLVED, code
+        assert "list" not in r.basis, code
+
+
+def test_code_shaped_list_name_never_contradicts_the_vendor():
+    # "d-Matrix" style lists next to a vendor tagline must not turn into a mismatch.
+    for listed, code in (("Orbit Fab", "orbitfab"), ("Interfold", "applytointerfold")):
+        r = resolve_identity([NameClaim("Some Vendor Tagline", VENDOR_API), NameClaim(listed, SOURCE_LIST, "kalil")], code=code)
+        assert r.status == UNRESOLVED, code
+        assert r.basis == ["vendor_only"], code
+        assert r.conflicts == [], code
+    # A list name that is not shaped like the code still contradicts.
+    r = resolve_identity([NameClaim("Some Vendor Tagline", VENDOR_API), NameClaim("Another Company", SOURCE_LIST, "kalil")], code="orbitfab")
+    assert r.status == MISMATCH
+
+
+def test_code_shaped_list_name_cannot_confirm_without_a_vendor_name():
+    # With no vendor record of who runs the board, a slug-shaped list name stays non-evidence.
+    r = resolve_identity([NameClaim("Orbit Fab", HOMEPAGE, "homepage"), NameClaim("Orbit Fab", SOURCE_LIST, "kalil")], code="orbitfab")
+    assert r.status == UNRESOLVED

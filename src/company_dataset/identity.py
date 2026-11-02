@@ -33,6 +33,7 @@ class NameClaim:
     kind: str
     origin: str = ""
     raw: str = ""        # the value as extracted, before cleanup (kept for provenance)
+    code_shaped: bool = False  # a list name made of the code's letters: may agree with a vendor name, never contradict it
 
 
 @dataclass
@@ -50,18 +51,20 @@ def resolve_identity(claims: list[NameClaim], code: str = "", board_ownership: b
     code_key = re.sub(r"[^a-z0-9]", "", (code or "").lower())
     for c in claims:
         n = clean_name(c.name, code)
-        # A list "name" that only re-spells the board code ("zbf", "Attendi", "Careeropportunities"
-        # for ecc.wd5/careeropportunities) is derived from the code, not evidence about the
-        # company: it can neither confirm nor contradict.
-        if n and c.kind == SOURCE_LIST and _derived_from_code(n, code_key):
+        # A list "name" anyone could produce from the board code ("zbf", "Attendi", "Alcazar Energy"
+        # for alcazar-energy) is not evidence about the company: it can neither confirm nor contradict.
+        if n and c.kind == SOURCE_LIST and _derived_from_code(n, code):
             continue
         if n and c.origin.endswith("_job_hiring_organization") and strip_entity_code(n) != n:
             # Compare both spellings; whichever is corroborated is used ("84 Lumber" keeps its digits).
             usable.append(NameClaim(strip_entity_code(n), c.kind, c.origin, c.raw or c.name))
         if n:
-            usable.append(NameClaim(n, c.kind, c.origin, c.raw or c.name))
+            usable.append(NameClaim(n, c.kind, c.origin, c.raw or c.name, c.kind == SOURCE_LIST and _code_shaped(n, code_key)))
     vendor = [c for c in usable if _CLASS[c.kind] == "vendor"]
     others = [c for c in usable if _CLASS[c.kind] != "vendor"]
+    # Spacing or casing a list adds to the code's letters ("10a Labs" for 10alabs) can back up the
+    # vendor's own name. Without that name it says nothing, and it never outweighs one.
+    informative = [c for c in others if not c.code_shaped]
 
     if vendor:
         ordered = [c for c in vendor if c.kind == VENDOR_API] + [c for c in vendor if c.kind != VENDOR_API]
@@ -76,21 +79,21 @@ def resolve_identity(claims: list[NameClaim], code: str = "", board_ownership: b
         # Only a discovery list naming another company can contradict the vendor. Homepage title
         # segments and Wikidata labels are often taglines, products or parents: they may support a
         # match but never by themselves make one a mismatch.
-        contradicting = [c for c in others if c.kind == SOURCE_LIST]
+        contradicting = [c for c in informative if c.kind == SOURCE_LIST]
         if contradicting:
             return Identity(MISMATCH, primary.name, ["vendor"], [f"{c.kind}:{c.origin}:{c.name}" for c in contradicting])
-        if others:
-            return Identity(UNRESOLVED, primary.name, ["vendor_not_corroborated"], [f"{c.kind}:{c.origin}:{c.name}" for c in others])
+        if informative:
+            return Identity(UNRESOLVED, primary.name, ["vendor_not_corroborated"], [f"{c.kind}:{c.origin}:{c.name}" for c in informative])
         return Identity(UNRESOLVED, primary.name, ["vendor_only"])
 
     # No vendor name (Rippling, Pinpoint, Workday, most iCIMS): two independent classes must agree,
     # and at least one must be something other than a discovery list.
-    strong = [c for c in others if c.kind != SOURCE_LIST]
+    strong = [c for c in informative if c.kind != SOURCE_LIST]
     for c in strong:
-        agreeing = [o for o in others if o is not c and _CLASS[o.kind] != _CLASS[c.kind] and names_compatible(o.name, c.name)]
+        agreeing = [o for o in informative if o is not c and _CLASS[o.kind] != _CLASS[c.kind] and names_compatible(o.name, c.name)]
         if agreeing:
             return Identity(CONFIRMED, display_name([c] + agreeing), [_CLASS[c.kind]] + sorted({_CLASS[o.kind] for o in agreeing}))
-    best = strong[0].name if strong else (others[0].name if others else None)
+    best = strong[0].name if strong else (informative[0].name if informative else None)
     return Identity(UNRESOLVED, best, ["insufficient_independent_evidence"])
 
 
@@ -269,7 +272,15 @@ def display_name(agreeing: list[NameClaim]) -> str:
     return sorted(agreeing, key=rank)[0].name
 
 
-def _derived_from_code(name: str, code_key: str) -> bool:
+def _derived_from_code(name: str, code: str) -> bool:
+    """The name is the code itself, or the code with its separators read as spaces."""
+    slug = (code or "").rsplit("/", 1)[-1].lower()  # ecc.wd5/careeropportunities -> careeropportunities
+    spelled = " ".join(name.lower().split())
+    return bool(slug) and spelled in (slug, " ".join(re.split(r"[-_.]+", slug)).strip())
+
+
+def _code_shaped(name: str, code_key: str) -> bool:
+    """The name's letters are the code's (or, for one word, part of it): "10a Labs" / 10alabs, "HubSpot" / hubspotjobs."""
     key = re.sub(r"[^a-z0-9]", "", name.lower())
     return bool(key) and (key == code_key or (" " not in name.strip() and key in code_key))
 
