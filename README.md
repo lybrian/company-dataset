@@ -2,14 +2,17 @@
 
 A list of companies that hire through **Greenhouse, Lever, Ashby, SmartRecruiters or Breezy HR**, built from public datasets and the vendors' own public job-board APIs.
 
-As of the last run (October 2026):
+As of the last export (`data/exports/final_2026-11-03`, not stored in git):
 
-- **8,373 companies** with all seven required fields: `data/output/companies_complete.csv`
-- **6,715 more** live companies missing at least one field: `data/output/companies_incomplete.csv`, which names the missing fields
-- **All 15,088** in one file for merging: `data/output/companies_total.csv`, with `complete` and `missing_fields` columns
-- 72% of the complete companies are headquartered in the US, UK or Canada
+- **19,059 verified companies** with a name, description, ATS and ATS code: `companies_verified.csv`
+- **2,702 more** confirmed companies missing one of those: `companies_incomplete.csv`
+- **8,815 live boards** with no confirmed identity: `unresolved_boards.csv`
+- By ATS: Greenhouse 6,087, SmartRecruiters 4,146, Ashby 4,104, Breezy 2,859, Lever 1,863
+- 3,733 verified companies had no open jobs at their last check
 
-All three start with the same required columns: `name`, `description`, `linkedin_url`, `website_url`, `careersite_url`, `ats_system`, `ats_code`. To share the data, send `companies_complete.csv` (or `companies_total.csv`) together with `source_manifest.csv`, which carries the credit some source licenses require.
+Rows were last checked between 1 and 3 November 2026; `qa_report.json` gives the counts, and this export did not run a fresh check of every board. Workable is kept apart in `workable_companies.csv`, which is empty for this export because Workable validation was not finished.
+
+The sections below describe the older `data/output` files where they name them. Those files start with the same required columns: `name`, `description`, `linkedin_url`, `website_url`, `careersite_url`, `ats_system`, `ats_code`. To share the data, send `companies_complete.csv` (or `companies_total.csv`) together with `source_manifest.csv`, which carries the credit some source licenses require.
 
 Every company on the list has a board that answered the vendor's API when we checked it. Nothing is made up. If we couldn't find a value from a real source, the field is empty and the company goes in the incomplete file.
 
@@ -19,7 +22,7 @@ Every company on the list has a board that answered the vendor's API when we che
 - **name**: the vendor's own record (the Greenhouse board name, the Ashby organization, the Lever page title). We fall back to the source datasets, then BigPicture, then the homepage title. Labels like "Open Roles" or "Acme Careers" don't count as names.
 - **website_url**: Ashby publishes each company's website, and Lever boards link to it. For Greenhouse we use the company domain its job links point to, or links in the company's own job ads. If none of those work, we look the company up in BigPicture by name, but only accept a domain that matches the board slug and whose homepage names the company.
 - **linkedin_url**: the LinkedIn company page linked from the company's homepage, cross-checked against BigPicture; otherwise BigPicture's record for that domain. It is never built from a name.
-- **description**: the description the company gives its own homepage (the meta description), or failing that its Greenhouse board intro. Descriptions must be in English: if a homepage is in another language we ask for its English version (and try `/en`, `/en-us`, `/en-gb`, `/us`); if there isn't one, the description is left empty. Recruiting copy ("Join our team…"), cookie banners and placeholders are filtered out, and long text is cut at a sentence boundary.
+- **description**: the description the company gives its own homepage (the meta description), or failing that its Greenhouse board intro. Descriptions may be in any language: a homepage's own meta description is accepted as written, and an English version is used when the site offers one.
 
 Vendor demo and sandbox boards ("Lever Demo 2", "UiPath Workday Sandbox") and companies' internal, referral and talent-pool boards are left out, since they aren't separate companies.
 
