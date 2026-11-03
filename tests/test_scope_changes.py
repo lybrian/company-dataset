@@ -191,3 +191,27 @@ def test_workable_discovery_keeps_only_workable(tmp_path):
 
 def test_workable_source_is_registered():
     assert "workable_discovery" in {m.META.name for m in SOURCES}
+
+
+def test_walking_workable_jobs_finds_each_employers_board_once_and_resumes(tmp_path):
+    page1 = {"totalSize": 3, "nextPageToken": "T2", "jobs": [{"id": "j1", "company": {"id": "c1", "title": "Bask", "website": "http://bask.health", "description": "<p>x</p>"}},
+                                                               {"id": "j2", "company": {"id": "c1", "title": "Bask"}}]}
+    page2 = {"totalSize": 3, "nextPageToken": None, "jobs": [{"id": "j3", "company": {"id": "c2", "title": "No Link"}}]}
+    c = client({wd.JOBS_API: FakeResponse(200, json.dumps(page1)), wd.JOBS_API + "?pageToken=T2": FakeResponse(200, json.dumps(page2)),
+                wd.JOBS_API + "/j1": FakeResponse(200, json.dumps({"linkoutUrl": "https://apply.workable.com/bask-health/j/ABC/"})),
+                wd.JOBS_API + "/j3": FakeResponse(200, json.dumps({"linkoutUrl": None}))})
+    assert wd.walk_jobs(tmp_path, c, max_pages=1) == {"pages_this_run": 1, "employers": 1, "finished": False}
+    assert wd.walk_jobs(tmp_path, c) == {"pages_this_run": 1, "employers": 2, "finished": True}
+    assert wd.JOBS_API + "/j2" not in c.session.calls
+    records, _ = wd.parse(tmp_path / wd.META.name / "tokens.csv")
+    assert [r.code for r in records] == ["bask-health"] and records[0].name is None
+    employers = [json.loads(line) for line in (tmp_path / wd.META.name / "employers.jsonl").read_text().splitlines()]
+    assert [e["name"] for e in employers] == ["Bask", "No Link"]
+
+
+def test_rebuild_merges_earlier_tokens_and_new_hits(tmp_path):
+    out = tmp_path / wd.META.name
+    out.mkdir()
+    (out / "tokens.csv").write_text("ats,code,region,evidence\nworkable,acme,,u\n")
+    (out / "hits.jsonl").write_text(json.dumps({"code": "ACME", "evidence": "x"}) + "\n" + json.dumps({"code": "beta", "evidence": "y"}) + "\n")
+    assert wd.rebuild_tokens(tmp_path) == 2

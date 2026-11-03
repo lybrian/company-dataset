@@ -8,22 +8,29 @@ Workable is delivered separately from the five target ATS, so this keeps to its 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import quote, urlencode
+
+import duckdb
+import requests
 
 from company_dataset.http import HttpClient, RequestError
 from company_dataset.models import SourceMeta
 from company_dataset.normalize import parse_board_url
 from company_dataset.platforms import WORKABLE
-from company_dataset.sources._harvest import boards_in_text, parse_tokens, plausible_slug, write_tokens
+from company_dataset.sources._harvest import board_from_url, boards_in_text, parse_tokens, plausible_slug, write_tokens
 from company_dataset.sources.github_lists import MAX_FILE_BYTES, _gh
 from company_dataset.sources.slug_files import VENDOR_WORDS, discover, slugs_in_file
 
 QUERIES = ["filename:workable_slugs", "filename:workable_boards", "filename:companies_workable", "filename:slugs.json workable", "filename:workable.txt", "filename:workable.json",
            '"apply.workable.com" extension:md', '"apply.workable.com" extension:json', '"apply.workable.com" extension:csv', '"apply.workable.com" extension:txt', '"apply.workable.com" extension:yaml']
 ALLOWED = (WORKABLE,)
+JSON_ACCEPT = {"Accept": "application/json"}
 
 META = SourceMeta(
     name="workable_discovery",
@@ -74,15 +81,178 @@ def harvest(raw_dir: Path, client: HttpClient, search=_gh, sleep=time.sleep) -> 
     return {"files_read": files, "boards": len(tokens)}
 
 
+# ---------------------------------------------------------------------------
+# Workable's own job site, Common Crawl and the Wayback Machine
+# ---------------------------------------------------------------------------
+
+JOBS_API = "https://jobs.workable.com/api/v1/jobs"
+DETAIL_WORKERS = 6
+TOKENS_EVERY_PAGES = 50
+CC_PREFIX = "com,workable,apply)/"
+WAYBACK_TARGET = ("apply.workable.com/*", None)
+
+
+def _hits_path(raw_dir: Path) -> Path:
+    path = Path(raw_dir) / META.name / "hits.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def rebuild_tokens(raw_dir: Path) -> int:
+    """tokens.csv from everything found so far, so a growing harvest can be imported at any point."""
+    tokens: dict = {}
+    out = Path(raw_dir) / META.name
+    existing = out / META.filename
+    if existing.exists():
+        with open(existing, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                tokens[(row["ats"], row["code"].casefold())] = (row["code"], row["region"], row["evidence"])
+    if _hits_path(raw_dir).exists():
+        with open(_hits_path(raw_dir), encoding="utf-8") as fh:
+            for line in fh:
+                hit = json.loads(line)
+                tokens.setdefault((WORKABLE, hit["code"].casefold()), (hit["code"], "", hit["evidence"]))
+    return write_tokens(existing, tokens)
+
+
+def _code_from_link(url: str | None) -> str | None:
+    board = board_from_url(url or "", ALLOWED)
+    return board[1] if board else None
+
+
+def walk_jobs(raw_dir: Path, client: HttpClient, max_pages: int | None = None) -> dict:
+    """Page through every live job; one detail request per employer gives its board. Resumes from the last saved page."""
+    state_path = Path(raw_dir) / META.name / "jobs_state.json"
+    state = json.loads(state_path.read_text()) if state_path.exists() else {"token": None, "pages": 0, "companies": []}
+    seen = set(state["companies"])
+    log = open(_hits_path(raw_dir), "a", encoding="utf-8")
+    employers = open(Path(raw_dir) / META.name / "employers.jsonl", "a", encoding="utf-8")
+    pages, found = 0, 0
+
+    def detail(job):
+        try:
+            resp = client.get(f"{JOBS_API}/{quote(job['id'], safe='')}", headers=JSON_ACCEPT)
+            return job, (resp.json().get("linkoutUrl") if resp.status == 200 else None)
+        except (RequestError, ValueError):
+            return job, None
+
+    while max_pages is None or pages < max_pages:
+        url = JOBS_API + ("?" + urlencode({"pageToken": state["token"]}) if state["token"] else "")
+        try:
+            resp = client.get(url, headers=JSON_ACCEPT)
+        except RequestError:
+            break
+        if resp.status != 200:
+            print(f"[workable-jobs] HTTP {resp.status}; stopping, finished pages are saved", flush=True)
+            break
+        data = resp.json()
+        fresh: dict = {}
+        for job in data.get("jobs") or []:
+            company = job.get("company") or {}
+            if company.get("id") and company["id"] not in seen:
+                fresh.setdefault(company["id"], job)
+        with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as ex:
+            for job, link in ex.map(detail, fresh.values()):
+                company = job["company"]
+                seen.add(company["id"])
+                code = _code_from_link(link)
+                employers.write(json.dumps({"company_id": company["id"], "name": company.get("title"), "website": company.get("website"), "description": company.get("description"), "code": code, "link": link}) + "\n")
+                if code:
+                    log.write(json.dumps({"code": code, "evidence": f"{JOBS_API}/{job['id']}"}) + "\n")
+                    found += 1
+        log.flush()
+        employers.flush()
+        state.update(token=data.get("nextPageToken"), pages=state["pages"] + 1, companies=sorted(seen))
+        pages += 1
+        if pages % TOKENS_EVERY_PAGES == 0 or not state["token"]:
+            state_path.write_text(json.dumps(state))
+            rebuild_tokens(raw_dir)
+            print(f"[workable-jobs] page {state['pages']} of about {(data.get('totalSize') or 0) // 20}: {len(seen)} employers, {found} boards this run", flush=True)
+        if not state["token"]:
+            break
+    state_path.write_text(json.dumps(state))
+    rebuild_tokens(raw_dir)
+    log.close()
+    employers.close()
+    return {"pages_this_run": pages, "employers": len(seen), "finished": not state["token"]}
+
+
+def common_crawl(raw_dir: Path) -> dict:
+    """apply.workable.com URLs in every crawl since 2019, reusing the footers the main index harvest saved."""
+    from company_dataset.sources import commoncrawl_indexer as cci
+
+    footers = Path(raw_dir) / cci.META.name / "footers"
+    footers.mkdir(parents=True, exist_ok=True)
+    crawls = sorted({c for c, _ in cci.work_list([c["id"] for c in requests.get(cci.COLLECTIONS, timeout=60).json()], harvested=[])}, reverse=True)
+    con = cci._connect()
+    found = 0
+    with open(_hits_path(raw_dir), "a", encoding="utf-8") as log:
+        for crawl in crawls:
+            try:
+                files = cci.relevant_files(cci._footers(con, footers, crawl), CC_PREFIX)
+                rows = con.execute("SELECT DISTINCT url FROM read_parquet(?) WHERE url_surtkey >= ? AND url_surtkey < ?", [files, CC_PREFIX, cci.prefix_end(CC_PREFIX)]).fetchall() if files else []
+            except (duckdb.Error, requests.RequestException, OSError) as exc:
+                print(f"[workable-cc] {crawl} failed: {type(exc).__name__}", flush=True)
+                continue
+            codes = {}
+            for (url,) in rows:
+                code = _code_from_link(url)
+                if code:
+                    codes.setdefault(code.casefold(), (code, url))
+            for code, url in codes.values():
+                log.write(json.dumps({"code": code, "evidence": url}) + "\n")
+            log.flush()
+            found += len(codes)
+            rebuild_tokens(raw_dir)
+            print(f"[workable-cc] {crawl}: {len(rows)} urls, {len(codes)} boards", flush=True)
+    return {"crawls": len(crawls), "boards_seen": found}
+
+
+def wayback(raw_dir: Path, client: HttpClient, sleep=time.sleep) -> dict:
+    from company_dataset.sources import wayback_cdx as wb
+
+    state_path = Path(raw_dir) / META.name / "wayback_state.json"
+    next_page = json.loads(state_path.read_text())["next_page"] if state_path.exists() else 0
+    pages = wb.page_count(client, WAYBACK_TARGET, sleep)
+    with open(_hits_path(raw_dir), "a", encoding="utf-8") as log:
+        for page in range(next_page, pages):
+            codes = {}
+            for line in wb._get(client, wb._query(WAYBACK_TARGET, page=page, fl="original"), sleep).splitlines():
+                code = _code_from_link(line.strip())
+                if code:
+                    codes.setdefault(code.casefold(), (code, line.strip()))
+            for code, url in codes.values():
+                log.write(json.dumps({"code": code, "evidence": url}) + "\n")
+            log.flush()
+            state_path.write_text(json.dumps({"next_page": page + 1}))
+            if page % 10 == 0:
+                rebuild_tokens(raw_dir)
+                print(f"[workable-wayback] page {page + 1}/{pages}", flush=True)
+    rebuild_tokens(raw_dir)
+    return {"pages": pages}
+
+
 def parse(path: Path):
     return parse_tokens(path, META.name, allowed=ALLOWED)
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="company_dataset.sources.workable_discovery")
+    p.add_argument("mode", nargs="?", default="github", choices=["github", "jobs", "cc", "wayback", "tokens"])
     p.add_argument("--raw", default="data/raw")
     a = p.parse_args(argv)
-    print(json.dumps(harvest(Path(a.raw), HttpClient(timeout=60, per_host_interval=0.1, max_attempts=2)), indent=1))
+    raw = Path(a.raw)
+    if a.mode == "github":
+        out = harvest(raw, HttpClient(timeout=60, per_host_interval=0.1, max_attempts=2))
+    elif a.mode == "jobs":
+        out = walk_jobs(raw, HttpClient(timeout=45, per_host_interval=0.1, max_attempts=3))
+    elif a.mode == "cc":
+        out = common_crawl(raw)
+    elif a.mode == "wayback":
+        out = wayback(raw, HttpClient(timeout=180, max_attempts=1, per_host_interval=4.0))
+    else:
+        out = {"boards": rebuild_tokens(raw)}
+    print(json.dumps(out, indent=1))
     return 0
 
 

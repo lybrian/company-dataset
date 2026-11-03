@@ -443,7 +443,8 @@ def select_boards(conn, args, emit) -> list[dict]:
         emit("only_source", source=args.only_source, boards=len(boards))
     if args.only_undecided:
         known = {r[0] for r in conn.execute("SELECT DISTINCT board_id FROM identities")}
-        boards = [b for b in boards if b["id"] not in known and b["ats"] in CORE_ATS]
+        scope = set(args.ats.split(",")) if args.ats else set(CORE_ATS)
+        boards = [b for b in boards if b["id"] not in known and b["ats"] in scope]
         emit("only_undecided", boards=len(boards))
     if args.board_ids:
         wanted = {int(line) for line in Path(args.board_ids).read_text().split()}
