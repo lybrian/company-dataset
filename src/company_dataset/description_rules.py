@@ -25,7 +25,7 @@ _RECRUITING_OPENER_RE = re.compile(r"(are you\b|do you\b|want to\b|looking (for|
 _JOB_AD_RE = re.compile(
     r"\b(you are|urgently|requires? the services|(?:is|are|currently) (?:looking|seeking)|we(?: are|'re) hiring|apply now|job openings?|vacanc(?:y|ies)"
     r"|envie de|carri[eè]re|nous recherchons|recrute|rejoign\w+|vous r[eê]vez|bieten wir dir|wir suchen|teilzeit|vollzeit|estamos buscando|[uú]nete|cerchiamo"
-    r"|hey\s+\w+\s+\w+!|wij zoeken|solliciteer)", re.I)
+    r"|hey\s+\w+\s+\w+!|wij zoeken|solliciteer|is hiring|are hiring|job description|per hour|looking for a|calling all|estamos [aà] procura)", re.I)
 _DECORATED_OPENER_RE = re.compile(r"^[^\w\s\"'“‘(]")
 _SIGNATURE_RE = re.compile(r"\|.*\b(direct|ext|suite)\b|\bsuite #|\d{3}-\d{3}-\d{4}", re.I)
 
