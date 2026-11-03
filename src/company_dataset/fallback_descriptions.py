@@ -263,7 +263,7 @@ def cascade(client: HttpClient, t: Target) -> Found | None:
     return None
 
 
-def targets(conn, runs: list[str]) -> list[Target]:
+def targets(conn, runs: list[str], confirmed_only: bool = False) -> list[Target]:
     """Live target boards with a usable name and no description, confirmed ones first: only they can
     be delivered now. Open boards are included because their identity may be confirmed later, and
     their description evidence is read here since merged rows show none until then."""
@@ -281,11 +281,11 @@ def targets(conn, runs: list[str]) -> list[Target]:
             continue
         target = Target(r["board_id"], r["ats_system"], r["ats_code"], r["region"], name, r["website_url"] or None, int(r["jobs_count"] or 0))
         (confirmed if r["company_name"] else others).append(target)
-    return confirmed + others
+    return confirmed if confirmed_only else confirmed + others
 
 
-def run(conn, run_label: str, from_runs: list[str], client: HttpClient, now: str, workers: int = 12) -> dict:
-    todo = targets(conn, from_runs)
+def run(conn, run_label: str, from_runs: list[str], client: HttpClient, now: str, workers: int = 12, confirmed_only: bool = False) -> dict:
+    todo = targets(conn, from_runs, confirmed_only)
     recovered = Counter()
     for start in range(0, len(todo), _CHECKPOINT_BATCH):
         batch = todo[start:start + _CHECKPOINT_BATCH]
@@ -305,10 +305,11 @@ def main(argv=None) -> int:
     p.add_argument("--db", required=True)
     p.add_argument("--run", required=True)
     p.add_argument("--from-runs", required=True)
+    p.add_argument("--confirmed-only", action="store_true", help="only boards that could be delivered now")
     a = p.parse_args(argv)
     conn = store.connect(a.db)
     client = HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2)
-    print(json.dumps(run(conn, a.run, [r for r in a.from_runs.split(",") if r], client, utc_now()), indent=1))
+    print(json.dumps(run(conn, a.run, [r for r in a.from_runs.split(",") if r], client, utc_now(), confirmed_only=a.confirmed_only), indent=1))
     return 0
 
 

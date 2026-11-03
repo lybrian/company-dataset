@@ -76,3 +76,12 @@ def test_smartrecruiters_text_must_be_about_the_account_holder(name, text, ok):
 @pytest.mark.parametrize("method", ["careers_page_paragraph", "careers_page_meta", "board_page_meta"])
 def test_careers_and_board_text_is_never_used_even_when_it_reads_well(method):
     assert acceptable(method, "Acme is a leading provider of warehouse robots for regional distribution centers everywhere.", "Acme") is False
+
+
+@pytest.mark.parametrize("name,text", [
+    ("Boreala Management", "Are you interested in working in an organization where you can be yourself at Boreala Management and have an impact?"),
+    ("Hive Logistics Inc", "Watch a Day in the Life of a Delivery Associate! Why Drive with Hive? Hive Logistics is an Amazon Delivery Partner in Lafayette."),
+    ("Acme", "Join Acme today and help us build the best robots for warehouses all around the wide world."),
+])
+def test_smartrecruiters_text_opening_as_a_recruiting_pitch_is_rejected(name, text):
+    assert acceptable("smartrecruiters_company_description", text, name) is False

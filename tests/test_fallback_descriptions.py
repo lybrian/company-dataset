@@ -169,3 +169,9 @@ def test_targets_skip_open_boards_already_described_and_put_confirmed_first(conn
     add_board(conn, "greenhouse", "bbbopen", "identity_unresolved", "Open Co")
     add_board(conn, "greenhouse", "zzzconfirmed", "identity_confirmed", "Confirmed Co")
     assert [t.code for t in fd.targets(conn, ["r"])] == ["zzzconfirmed", "aaaslogan", "bbbopen"]
+
+
+def test_targets_can_be_limited_to_confirmed_boards(conn):
+    add_board(conn, "greenhouse", "confirmedco", "identity_confirmed", "Confirmed Co")
+    add_board(conn, "greenhouse", "openco", "identity_unresolved", "Open Co")
+    assert [t.code for t in fd.targets(conn, ["r"], confirmed_only=True)] == ["confirmedco"]

@@ -21,6 +21,7 @@ _LEAD_IN = r"(?:(?:founded|established|launched|started|headquartered|based)\b[^
 _LEGAL_TAIL = r"(?:,?\s*&?\s*(?:company|co|inc|incorporated|llc|llp|ltd|limited|corp|corporation|gmbh|plc)\b\.?)*"
 _NOT_A_DESCRIPTION_RE = re.compile(
     r"\b(place to work|benefits?|bonus|compensation|salary|pto|medical plans?|rotation program|program open|will host|hackathon|employee turnover|is hiring|is looking|is providing)\b", re.I)
+_RECRUITING_OPENER_RE = re.compile(r"(are you\b|do you\b|want to\b|looking (for|to)\b|watch\b|join\b|work (with|for|at)\b|come\b|why\b)", re.I)
 _SIGNATURE_RE = re.compile(r"\|.*\b(direct|ext|suite)\b|\bsuite #|\d{3}-\d{3}-\d{4}", re.I)
 
 
@@ -57,7 +58,9 @@ def describes_company(text: str, name: str) -> bool:
 def _about_account_holder(text: str, name: str) -> bool:
     """SmartRecruiters' field is filled per posting, so agencies put their client's text in it."""
     tokens = [t for t in _tokens(name) if t not in _LEGAL_WORDS_FOR_NAMES]
-    return bool(tokens) and not _SIGNATURE_RE.search(text or "") and re.search(rf"\b{re.escape(tokens[0])}\b", _fold(text or "").lower()) is not None
+    if not tokens or _SIGNATURE_RE.search(text or "") or _RECRUITING_OPENER_RE.match((text or "").strip()):
+        return False
+    return re.search(rf"\b{re.escape(tokens[0])}\b", _fold(text or "").lower()) is not None
 
 
 def acceptable(method: str, text: str, name: str) -> bool:
