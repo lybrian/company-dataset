@@ -214,3 +214,29 @@ def test_all_new_sources_are_registered_and_not_downloadable():
     by_name = {m.META.name: m.META for m in SOURCES}
     for name in ("search_dorks", "github_lists", "dns_cname", "corporate_graph", "yc_slugs_2026_11_03"):
         assert by_name[name].downloadable is False
+
+
+def test_yc_plan_for_one_vendor_skips_what_the_pilot_already_tried():
+    companies = [(f"Co{i}", f"https://co{i}.com") for i in range(30)]
+    pilot = prober.plan_slugs(companies, set(), limit=10, seed=1)
+    rest = yc_slugs.remaining_plan(companies, set(), vendors=["ashby"], tried_per_vendor=10, seed=1)
+    assert list(rest) == ["ashby"]
+    assert not set(rest["ashby"]) & set(pilot["ashby"])
+    assert len(rest["ashby"]) == 20
+
+
+def test_yc_rejects_a_vendor_it_does_not_know():
+    with pytest.raises(ValueError):
+        yc_slugs.remaining_plan([], set(), vendors=["workday"], tried_per_vendor=0, seed=1)
+
+
+def test_prober_run_can_keep_earlier_hits(tmp_path):
+    out = tmp_path / prober.META.name
+    out.mkdir()
+    (out / "tokens.csv").write_text("ats,code,region,evidence\nlever,fly,,slug_probe\nashby,magic,,slug_probe\n")
+    (out / "probe_report.json").write_text(json.dumps({"lever": {"tried": 5000}}))
+    url = prober.probe_url("ashby", "newco")
+    report = prober.run(tmp_path, {"ashby": ["newco"]}, client_factory=lambda: client({url: FakeResponse(200, "{}", url)}), keep_existing=True, report_key="ashby_full")
+    assert report["ashby_full"]["live"] == 1 and report["lever"] == {"tried": 5000}
+    records, _ = prober.parse(out / "tokens.csv")
+    assert sorted(r.code for r in records) == ["fly", "magic", "newco"]

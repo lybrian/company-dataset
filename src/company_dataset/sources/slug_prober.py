@@ -9,6 +9,7 @@ board exists under that identifier, not whose it is, so the guessed name is not 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import random
 import re
@@ -144,12 +145,18 @@ def plan_slugs(companies: list[tuple[str, str]], known: set[tuple[str, str]], li
     return plan
 
 
-def run(raw_dir: Path, plan: dict[str, list[str]], client_factory=None, meta: SourceMeta = META) -> dict:
+def run(raw_dir: Path, plan: dict[str, list[str]], client_factory=None, meta: SourceMeta = META, keep_existing: bool = False, report_key: str | None = None) -> dict:
+    """keep_existing: add to an earlier run's hits and report instead of replacing them. report_key: this run's name in the report, for a single vendor."""
     out = Path(raw_dir) / meta.name
     out.mkdir(parents=True, exist_ok=True)
     tokens: dict[tuple[str, str], tuple[str, str, str]] = {}
     lock = threading.Lock()
     report: dict[str, dict] = {}
+    if keep_existing:
+        with open(out / meta.filename, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                tokens[(row["ats"], row["code"].casefold())] = (row["code"], row["region"], row["evidence"])
+        report = json.loads((out / "probe_report.json").read_text())
 
     def on_hit(ats, slug, moved=None):
         with lock:
@@ -159,8 +166,9 @@ def run(raw_dir: Path, plan: dict[str, list[str]], client_factory=None, meta: So
 
     def work(ats):
         client = (client_factory or (lambda: HttpClient(timeout=20, max_attempts=1, per_host_interval=SECONDS_BETWEEN_REQUESTS)))()
-        report[ats] = probe_vendor(client, ats, plan[ats], on_hit=on_hit)
-        print(f"[prober] {ats}: {report[ats]}", flush=True)
+        key = report_key or ats
+        report[key] = probe_vendor(client, ats, plan[ats], on_hit=on_hit)
+        print(f"[prober] {key}: {report[key]}", flush=True)
 
     threads = [threading.Thread(target=work, args=(ats,)) for ats in plan]
     for t in threads:
