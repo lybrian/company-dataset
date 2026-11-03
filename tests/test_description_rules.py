@@ -85,3 +85,28 @@ def test_careers_and_board_text_is_never_used_even_when_it_reads_well(method):
 ])
 def test_smartrecruiters_text_opening_as_a_recruiting_pitch_is_rejected(name, text):
     assert acceptable("smartrecruiters_company_description", text, name) is False
+
+
+@pytest.mark.parametrize("name, text", [
+    ("Anton Paar", "You are... ... an expert in polymer markets at Anton Paar who can build consensus and collaboration."),
+    ("Premier Logistics", "Premier Logistics is an Amazon Delivery Service Partner (DSP) and URGENTLY requires the services of Delivery Drivers to service routes."),
+    ("Cloudnexa.com", "Cloudnexa is an Amazon Web Services (AWS) Premier Partner that is looking for an experienced and motivated Cloud support engineer."),
+    ("Spie batignolles", "Envie de construire bien plus qu'une carrière ? Chez Spie batignolles, groupe indépendant fier de ses salariés."),
+    ("McDonald's Österreich", "Als weltweiter Marktführer im Bereich der Systemgastronomie bieten wir dir bei McDonald's einen Teilzeitjob in deiner Nähe."),
+    ("Forever", "✅ شركة الصبار Forever Living of America هي واحدة من أكبر الشركات"),
+    ("Carel Lurvink", "Hey sales professional! Maak impact bij industriële bedrijven in heel Nederland bij Carel Lurvink."),
+    ("Kaufman & Broad", "Rejoignez l'aventure Kaufman & Broad ! Vous rêvez de rejoindre une entreprise."),
+    ("EVORIEL", "LAMY, marque du Groupe Evoriel, recrute ! EVORIEL est un groupe indépendant de services immobiliers."),
+])
+def test_smartrecruiters_job_ad_text_is_not_a_company_description(name, text):
+    assert not acceptable("smartrecruiters_company_description", text, name)
+
+
+@pytest.mark.parametrize("name, text", [
+    ("OceanaGold", "OceanaGold is a global intermediate gold and copper producer with more than 35 years of exploration and development."),
+    ("Bank of China Luxembourg", "As a Luxembourg-based bank since 1979, together with the global presence of Bank of China Group, Bank of China Luxembourg has grown."),
+    ("Nazarbayev University", "Назарбаев Университет - современный университет. Nazarbayev University находится в Астане."),
+    ("UFF", "A l'origine du métier de conseiller en gestion de patrimoine en France, l'UFF est leader sur son marché depuis plus de 50 ans."),
+])
+def test_smartrecruiters_company_text_still_passes(name, text):
+    assert acceptable("smartrecruiters_company_description", text, name)

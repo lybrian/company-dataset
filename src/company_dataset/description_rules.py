@@ -22,6 +22,11 @@ _LEGAL_TAIL = r"(?:,?\s*&?\s*(?:company|co|inc|incorporated|llc|llp|ltd|limited|
 _NOT_A_DESCRIPTION_RE = re.compile(
     r"\b(place to work|benefits?|bonus|compensation|salary|pto|medical plans?|rotation program|program open|will host|hackathon|employee turnover|is hiring|is looking|is providing)\b", re.I)
 _RECRUITING_OPENER_RE = re.compile(r"(are you\b|do you\b|want to\b|looking (for|to)\b|watch\b|join\b|work (with|for|at)\b|come\b|why\b)", re.I)
+_JOB_AD_RE = re.compile(
+    r"\b(you are|urgently|requires? the services|(?:is|are|currently) (?:looking|seeking)|we(?: are|'re) hiring|apply now|job openings?|vacanc(?:y|ies)"
+    r"|envie de|carri[eè]re|nous recherchons|recrute|rejoign\w+|vous r[eê]vez|bieten wir dir|wir suchen|teilzeit|vollzeit|estamos buscando|[uú]nete|cerchiamo"
+    r"|hey\s+\w+\s+\w+!|wij zoeken|solliciteer)", re.I)
+_DECORATED_OPENER_RE = re.compile(r"^[^\w\s\"'“‘(]")
 _SIGNATURE_RE = re.compile(r"\|.*\b(direct|ext|suite)\b|\bsuite #|\d{3}-\d{3}-\d{4}", re.I)
 
 
@@ -58,7 +63,8 @@ def describes_company(text: str, name: str) -> bool:
 def _about_account_holder(text: str, name: str) -> bool:
     """SmartRecruiters' field is filled per posting, so agencies put their client's text in it."""
     tokens = [t for t in _tokens(name) if t not in _LEGAL_WORDS_FOR_NAMES]
-    if not tokens or _SIGNATURE_RE.search(text or "") or _RECRUITING_OPENER_RE.match((text or "").strip()):
+    opening = (text or "").strip()
+    if not tokens or _SIGNATURE_RE.search(opening) or _RECRUITING_OPENER_RE.match(opening) or _JOB_AD_RE.search(opening) or _DECORATED_OPENER_RE.match(opening):
         return False
     return re.search(rf"\b{re.escape(tokens[0])}\b", _fold(text or "").lower()) is not None
 
