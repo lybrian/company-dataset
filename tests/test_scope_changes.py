@@ -193,20 +193,34 @@ def test_workable_source_is_registered():
     assert "workable_discovery" in {m.META.name for m in SOURCES}
 
 
-def test_walking_workable_jobs_finds_each_employers_board_once_and_resumes(tmp_path):
-    page1 = {"totalSize": 3, "nextPageToken": "T2", "jobs": [{"id": "j1", "company": {"id": "c1", "title": "Bask", "website": "http://bask.health", "description": "<p>x</p>"}},
-                                                               {"id": "j2", "company": {"id": "c1", "title": "Bask"}}]}
-    page2 = {"totalSize": 3, "nextPageToken": None, "jobs": [{"id": "j3", "company": {"id": "c2", "title": "No Link"}}]}
-    c = client({wd.JOBS_API: FakeResponse(200, json.dumps(page1)), wd.JOBS_API + "?pageToken=T2": FakeResponse(200, json.dumps(page2)),
-                wd.JOBS_API + "/j1": FakeResponse(200, json.dumps({"linkoutUrl": "https://apply.workable.com/bask-health/j/ABC/"})),
-                wd.JOBS_API + "/j3": FakeResponse(200, json.dumps({"linkoutUrl": None}))})
+def test_walking_workable_jobs_lists_each_employer_once_and_resumes(tmp_path):
+    page1 = {"totalSize": 3, "nextPageToken": "T2", "jobs": [{"id": "j1", "title": "Nurse", "company": {"id": "c1", "title": "Bask Health", "website": "http://bask.health"}},
+                                                               {"id": "j2", "title": "Doctor", "company": {"id": "c1", "title": "Bask Health"}}]}
+    page2 = {"totalSize": 3, "nextPageToken": None, "jobs": [{"id": "j3", "title": "Cook", "company": {"id": "c2", "title": "Silver Hills"}}]}
+    c = client({wd.JOBS_API: FakeResponse(200, json.dumps(page1)), wd.JOBS_API + "?pageToken=T2": FakeResponse(200, json.dumps(page2))})
     assert wd.walk_jobs(tmp_path, c, max_pages=1) == {"pages_this_run": 1, "employers": 1, "finished": False}
     assert wd.walk_jobs(tmp_path, c) == {"pages_this_run": 1, "employers": 2, "finished": True}
-    assert wd.JOBS_API + "/j2" not in c.session.calls
-    records, _ = wd.parse(tmp_path / wd.META.name / "tokens.csv")
-    assert [r.code for r in records] == ["bask-health"] and records[0].name is None
     employers = [json.loads(line) for line in (tmp_path / wd.META.name / "employers.jsonl").read_text().splitlines()]
-    assert [e["name"] for e in employers] == ["Bask", "No Link"]
+    assert [e["name"] for e in employers] == ["Bask Health", "Silver Hills"]
+
+
+def test_employer_slug_candidates_come_from_name_then_website():
+    assert wd.slug_candidates("Bask Health", "http://www.bask.health/x") == ["bask-health", "baskhealth", "bask"]
+    assert wd.slug_candidates("Café Ñu & Co.", None) == ["cafe-nu-co", "cafenuco"]
+    assert wd.slug_candidates("株式会社", None) == []
+
+
+def test_matching_accepts_only_an_account_with_the_employers_exact_name(tmp_path):
+    out = tmp_path / wd.META.name
+    out.mkdir()
+    rows = [{"company_id": "c1", "name": "Bask Health", "website": None}, {"company_id": "c2", "name": "Acme", "website": None}, {"company_id": "c3", "name": "Known Co", "website": None}]
+    (out / "employers.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    accounts = wd.ACCOUNT_API + "/"
+    c = client({accounts + "bask-health": FakeResponse(200, json.dumps({"name": "Bask Health", "jobs": []})), accounts + "acme": FakeResponse(200, json.dumps({"name": "Acme Roofing Ltd", "jobs": []}))})
+    assert wd.match_employers(tmp_path, c, known={"known-co"}) == {"employers": 3, "matched": 1, "known": 1, "unmatched": 1}
+    records, _ = wd.parse(out / "tokens.csv")
+    assert [r.code for r in records] == ["bask-health"] and records[0].name is None
+    assert wd.match_employers(tmp_path, c, known=set()) == {"employers": 3, "matched": 0, "known": 0, "unmatched": 0}
 
 
 def test_rebuild_merges_earlier_tokens_and_new_hits(tmp_path):

@@ -28,7 +28,7 @@ QUERIES = ["filename:slugs.json greenhouse", "filename:slugs.json lever", "filen
            "filename:ashby_slugs", "filename:lever_slugs", "filename:smartrecruiters_slugs", "filename:breezy_slugs", "filename:greenhouse_boards", "filename:lever_boards", "filename:ashby_boards",
            "filename:board_tokens", "filename:ats_companies", "filename:boards.json greenhouse ashby", "filename:companies.yaml greenhouse lever ashby", "filename:companies.yml greenhouse lever",
            "filename:companies.json greenhouse lever ashby", "filename:companies.csv greenhouse lever", "filename:targets.json greenhouse lever", "filename:sources.json greenhouse lever ashby"]
-PAGES_PER_QUERY = 3
+PAGES_PER_QUERY = 10  # GitHub's code search stops at 1,000 results, which is 10 pages
 _ATS_WORDS = {"greenhouse": GREENHOUSE, "gh": GREENHOUSE, "lever": LEVER, "ashby": ASHBY, "ashbyhq": ASHBY, "smartrecruiters": SMARTRECRUITERS, "smart_recruiters": SMARTRECRUITERS, "breezy": BREEZY, "breezyhr": BREEZY, "breezy_hr": BREEZY, "workable": WORKABLE}
 VENDOR_WORDS = frozenset(("www", "apply", "resources", "help", "support", "jobs", "careers", "blog", "app", "api", "status", "docs", "mail", "marketing", "go", "info", "assets", "cdn", "static"))
 _ATS_FIELDS = ("ats", "platform", "provider", "source", "ats_type", "atstype", "type", "vendor", "system", "ats_system")
