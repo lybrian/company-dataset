@@ -11,6 +11,12 @@ from company_dataset.normalize import CORE_ATS, clean_code, parse_board_url
 # Stricter than clean_code, which lets template leftovers from crawled pages through ("$company").
 _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 COLUMNS = ["ats", "code", "region", "evidence"]
+# Crawled URLs put posting ids, version numbers and files where a board name goes.
+_NOT_A_BOARD_RE = re.compile(r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{1,2}|\d+(?:\.\d+)+|.+\.(?:txt|xml|json|html?|php|js|css|png|jpe?g|gif|svg|ico|pdf))$", re.I)
+
+
+def plausible_slug(code: str | None) -> bool:
+    return bool(code) and bool(_SLUG_RE.match(code)) and not _NOT_A_BOARD_RE.match(code)
 
 
 def board_from_url(url: str) -> tuple[str, str, str] | None:
@@ -19,7 +25,7 @@ def board_from_url(url: str) -> tuple[str, str, str] | None:
     if not parsed or parsed.ats not in CORE_ATS:
         return None
     code = clean_code(parsed.ats, parsed.code)
-    if not code or not _SLUG_RE.match(code):
+    if not plausible_slug(code):
         return None
     return parsed.ats, code, parsed.region or ""
 
@@ -51,7 +57,7 @@ def parse_tokens(path: Path, source: str) -> tuple[list[SourceRecord], list[Reje
                 rejects.append(Reject(source=source, reason="unsupported_ats", detail=ats, row_ref=ref))
                 continue
             code = clean_code(ats, raw)
-            if not code or not _SLUG_RE.match(code):
+            if not plausible_slug(code):
                 rejects.append(Reject(source=source, reason="invalid_slug", detail=raw, row_ref=ref, ats=ats))
                 continue
             # No name: a discovered identifier says nothing about which company runs the board.

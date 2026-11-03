@@ -27,6 +27,9 @@ SEEDS = [
     "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md",
     "https://raw.githubusercontent.com/remoteintech/remote-jobs/main/README.md",
     "https://raw.githubusercontent.com/dreamworkhq/Remote-Tech-Jobs/main/README.md",
+    # The structured data behind the two SimplifyJobs READMEs lists many more boards than they show.
+    "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json",
+    "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/.github/scripts/listings.json",
 ]
 BOARD_HOSTS = ["boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.lever.co", "jobs.ashbyhq.com", "jobs.smartrecruiters.com", "careers.smartrecruiters.com", "breezy.hr"]
 # Code search returns at most 1,000 results a query, so each host is split by file type.
