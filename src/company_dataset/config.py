@@ -16,7 +16,7 @@ ATS_RATE_LIMITS = {
     "smartrecruiters": {"max_concurrent": 2, "delay_seconds": 0.5},
     "breezy": {"max_concurrent": 2, "delay_seconds": 0.5},
     # One shared API host each: keep these gentle.
-    "workable": {"max_concurrent": 3, "delay_seconds": 0.3},
+    "workable": {"max_concurrent": 1, "delay_seconds": 0.7},  # about 1.4 requests a second; it answers 429 well before 4
     "rippling": {"max_concurrent": 3, "delay_seconds": 0.3},
     "join": {"max_concurrent": 4, "delay_seconds": 0.25},
     # Per-company subdomains on shared vendor infrastructure.
