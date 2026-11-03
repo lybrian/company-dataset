@@ -22,11 +22,31 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def import_sources(conn: sqlite3.Connection, raw_dir: Path, now: str, modules=SOURCES, only: set[str] | None = None) -> dict:
+def _append_rows(conn: sqlite3.Connection, existing, meta, path: Path, digest: str, records: list, rejects: list, now: str) -> dict:
+    """Rows this source has not yet recorded, added after the ones it has: earlier rows are never changed."""
+    seen = {(r["ats"], (r["code"] or "").casefold()) for r in conn.execute("SELECT ats, code FROM source_rows WHERE source_id=?", (existing["id"],))}
+    new = [r for r in records if (r.ats, r.code.casefold()) not in seen]
+    with conn:
+        seq = conn.execute("SELECT COALESCE(MAX(seq), -1) + 1 FROM source_rows WHERE source_id=?", (existing["id"],)).fetchone()[0]
+        added: set = set()
+        for rec in new:
+            if (rec.ats, rec.code.casefold()) in added:
+                continue
+            added.add((rec.ats, rec.code.casefold()))
+            bid = store.board_id(conn, rec.ats, rec.code, rec.region)
+            conn.execute("INSERT INTO source_rows(source_id, seq, row_ref, board_id, ats, code, region, name, careersite_url) VALUES (?,?,?,?,?,?,?,?,?)",
+                         (existing["id"], seq, rec.row_ref, bid, rec.ats, rec.code, rec.region, rec.name, rec.careersite_url))
+            seq += 1
+        conn.execute("UPDATE sources SET file_sha256=?, file_path=?, rows_read=rows_read+? WHERE id=?", (digest, str(path), len(added), existing["id"]))
+    return {"status": "appended", "records": len(added), "rejects": len(rejects), "sha256": digest}
+
+
+def import_sources(conn: sqlite3.Connection, raw_dir: Path, now: str, modules=SOURCES, only: set[str] | None = None, incremental: bool = False) -> dict:
     """Every adapter output row (records and rejects) becomes one source_rows row, in order.
 
     A source already imported from the same file checksum is skipped; a different checksum
-    for an already-imported source is refused, so history is never silently replaced.
+    for an already-imported source is refused, so history is never silently replaced. With
+    incremental, a harvest that keeps growing adds its new rows instead.
     """
     report = {}
     for mod in modules:
@@ -42,9 +62,12 @@ def import_sources(conn: sqlite3.Connection, raw_dir: Path, now: str, modules=SO
         if existing and existing["file_sha256"] == digest:
             report[meta.name] = {"status": "already_imported", "rows_read": existing["rows_read"]}
             continue
-        if existing:
+        if existing and not incremental:
             raise RuntimeError(f"{meta.name}: already imported from a different file ({existing['file_sha256'][:12]} != {digest[:12]})")
         records, rejects = mod.parse(path)
+        if existing:
+            report[meta.name] = _append_rows(conn, existing, meta, path, digest, records, rejects, now)
+            continue
         with conn:
             cur = conn.execute(
                 "INSERT INTO sources(name, url, license, file_path, file_sha256, rows_read, imported_at) VALUES (?,?,?,?,?,?,?)",
@@ -213,10 +236,11 @@ def main(argv=None) -> int:
     p.add_argument("--pages", action="append", default=[])
     p.add_argument("--qa", action="append", default=[], help="ORIGIN=path to a qa.py jsonl")
     p.add_argument("--only", default="", help="comma-separated source names: import just these")
+    p.add_argument("--incremental", action="store_true", help="add new rows from a harvest that has grown, instead of refusing it")
     p.add_argument("--report", help="write the import report JSON here")
     a = p.parse_args(argv)
     conn = store.connect(a.db)
-    report = {"started_at": utc_now(), "sources": import_sources(conn, Path(a.raw), utc_now(), only={n for n in a.only.split(",") if n} or None)}
+    report = {"started_at": utc_now(), "sources": import_sources(conn, Path(a.raw), utc_now(), only={n for n in a.only.split(",") if n} or None, incremental=a.incremental)}
     report["caches"] = {}
     for spec in a.cache:
         origin, _, path = spec.partition("=")

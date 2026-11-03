@@ -2,8 +2,8 @@
 
     SERPAPI_KEY=... python -m company_dataset.sources.search_dorks --raw data/raw --max-queries 100
 
-Queries cost money, so --max-queries is required and nothing runs without a key. Backends: SerpAPI, or
-Google Custom Search for an existing customer (GOOGLE_API_KEY + GOOGLE_CSE_ID); that API is closed to
+Queries cost money, so --max-queries is required and nothing runs without a key. Backends: SerpAPI, Brave
+(BRAVE_API_KEY), or Google Custom Search for an existing customer (GOOGLE_API_KEY + GOOGLE_CSE_ID); that API is closed to
 new customers. Bing's search API was retired in 2025. Result pages are never scraped directly.
 A result on a company's own site is fetched once, to read which board it links to.
 """
@@ -28,6 +28,7 @@ INDUSTRIES = ["fintech", "healthcare", "biotech", "cybersecurity", "robotics", "
 STACKS = ["python", "kotlin", "golang", "rust", "kubernetes", "react", "machine learning", "data engineering"]
 RESULTS_PER_PAGE = 100
 GOOGLE_PAGE_SIZE = 10
+BRAVE_PAGE_SIZE = 20
 
 META = SourceMeta(
     name="search_dorks",
@@ -58,14 +59,20 @@ def backend_from_env(env=os.environ):
     if env.get("SERPAPI_KEY") or env.get("SERPAPI_API_KEY"):
         key = env.get("SERPAPI_KEY") or env.get("SERPAPI_API_KEY")
         return "serpapi", lambda q, start: "https://serpapi.com/search.json?" + urlencode({"engine": "google", "q": q, "num": RESULTS_PER_PAGE, "start": start, "api_key": key})
+    if env.get("BRAVE_API_KEY"):
+        return "brave", lambda q, start: "https://api.search.brave.com/res/v1/web/search?" + urlencode({"q": q, "count": BRAVE_PAGE_SIZE, "offset": start // BRAVE_PAGE_SIZE})
     if env.get("GOOGLE_API_KEY") and env.get("GOOGLE_CSE_ID"):
         key, cx = env["GOOGLE_API_KEY"], env["GOOGLE_CSE_ID"]
         return "google_cse", lambda q, start: "https://www.googleapis.com/customsearch/v1?" + urlencode({"key": key, "cx": cx, "q": q, "num": GOOGLE_PAGE_SIZE, "start": start + 1})
-    raise NoSearchBackend("set SERPAPI_KEY, or GOOGLE_API_KEY and GOOGLE_CSE_ID: no search was run")
+    raise NoSearchBackend("set SERPAPI_KEY, BRAVE_API_KEY, or GOOGLE_API_KEY and GOOGLE_CSE_ID: no search was run")
+
+
+def request_headers(name: str, env=os.environ) -> dict | None:
+    return {"X-Subscription-Token": env["BRAVE_API_KEY"], "Accept": "application/json"} if name == "brave" else None
 
 
 def result_links(payload: dict) -> list[str]:
-    links = [r.get("link") for r in payload.get("organic_results") or []] + [r.get("link") for r in payload.get("items") or []]
+    links = [r.get("link") for r in payload.get("organic_results") or []] + [r.get("link") for r in payload.get("items") or []] + [r.get("url") for r in (payload.get("web") or {}).get("results") or []]
     return [u for u in links if u]
 
 
@@ -116,9 +123,9 @@ def harvest(raw_dir: Path, client: HttpClient, max_queries: int, env=os.environ,
                 if spent >= max_queries:
                     break
                 spent += 1
-                size = RESULTS_PER_PAGE if name == "serpapi" else GOOGLE_PAGE_SIZE
+                size = {"serpapi": RESULTS_PER_PAGE, "brave": BRAVE_PAGE_SIZE}.get(name, GOOGLE_PAGE_SIZE)
                 try:
-                    resp = client.get(build_url(query, page * size))
+                    resp = client.get(build_url(query, page * size), headers=request_headers(name, env))
                 except RequestError:
                     failed += 1  # the message would contain the URL, and with it the key
                     continue
