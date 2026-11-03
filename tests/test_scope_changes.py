@@ -1,6 +1,7 @@
 """Non-English descriptions, ownership evidence and the separate Workable file."""
 import csv
 import json
+import time
 
 import pytest
 
@@ -229,3 +230,49 @@ def test_rebuild_merges_earlier_tokens_and_new_hits(tmp_path):
     (out / "tokens.csv").write_text("ats,code,region,evidence\nworkable,acme,,u\n")
     (out / "hits.jsonl").write_text(json.dumps({"code": "ACME", "evidence": "x"}) + "\n" + json.dumps({"code": "beta", "evidence": "y"}) + "\n")
     assert wd.rebuild_tokens(tmp_path) == 2
+
+
+def _board(ats, code, board_id):
+    return {"id": board_id, "ats": ats, "code": code}
+
+
+def test_a_vendor_that_keeps_rate_limiting_is_left_alone_for_the_rest_of_the_run(conn, monkeypatch):
+    from types import SimpleNamespace
+
+    from company_dataset import enrich
+
+    def stage(validator, client, b, costs):
+        limited = b["ats"] == "workable"
+        time.sleep(0.01)  # a real request is still running when the stop arrives; finished ones cannot be cancelled
+        return {"board": b, "outcome": "rate_limited" if limited else "verified_live", "validation": {"status": "valid", "checked_at": "2026-11-03T00:00:00Z", "http_status": 429 if limited else 200}}
+
+    monkeypatch.setattr(enrich, "stage_board", stage)
+    monkeypatch.setattr(enrich, "RATE_LIMIT_STOP_AFTER", 3)
+    with conn:
+        for i in range(1, 41):
+            conn.execute("INSERT INTO boards(id, ats, code, code_key) VALUES (?,?,?,?)", (i, "workable" if i <= 30 else "lever", f"c{i}", f"c{i}"))
+    events = []
+    ctx = SimpleNamespace(workers=1, validator=None, client=None, costs=None, conn=conn, run="r", emit=lambda name, **kw: events.append(name), timed=lambda *a: None)
+    results = enrich.check_boards(ctx, [_board("workable" if i <= 30 else "lever", f"c{i}", i) for i in range(1, 41)])
+    by_ats = {a: sum(r["board"]["ats"] == a for r in results) for a in ("workable", "lever")}
+    assert by_ats["lever"] == 10 and by_ats["workable"] < 30
+    assert "rate_limit_stop" in events
+
+
+def test_boards_last_seen_only_rate_limited_count_as_undecided(conn):
+    from company_dataset import enrich
+
+    with conn:
+        for i, code in ((1, "final"), (2, "limited"), (3, "fresh")):
+            conn.execute("INSERT INTO boards(id, ats, code, code_key) VALUES (?,?,?,?)", (i, "lever", code, code))
+        for board_id, outcome in ((1, "dead_removed"), (2, "rate_limited")):
+            conn.execute("INSERT INTO verifications(board_id, checked_at, origin, outcome) VALUES (?,?,?,?)", (board_id, "2026-11-03T00:00:00Z", "r", outcome))
+            conn.execute("INSERT INTO identities(board_id, run, status, decided_at) VALUES (?,?,?,?)", (board_id, "r", "not_live", "2026-11-03T00:00:00Z"))
+    boards = [_board("lever", c, i) for i, c in ((1, "final"), (2, "limited"), (3, "fresh"))] + [_board("join", "other", 4)]
+    assert [b["code"] for b in enrich.undecided_boards(conn, boards, None)] == ["limited", "fresh"]
+
+
+def test_fast_mode_does_not_loosen_workable():
+    from company_dataset.config import FAST_RATE_LIMITS
+
+    assert "workable" not in FAST_RATE_LIMITS

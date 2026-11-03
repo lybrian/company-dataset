@@ -43,13 +43,14 @@ from company_dataset.platforms import ICIMS, WORKDAY
 from company_dataset.reference import domain_chain
 from company_dataset.validate import AtsRateLimiter, BoardValidator
 from company_dataset.validate_extra import vendor_identity
-from company_dataset.verification import LIVE, classify
+from company_dataset.verification import LIVE, RATE_LIMITED, RETRYABLE, classify
 
 # Website pointers that come from the board itself (vendor data or the hosted page), so a
 # homepage reached through them is independent evidence of who runs the board.
 BOARD_ATTESTED = ("careersite_redirect_domain", "board_job_ad_link", "vendor_job_org_url", "ashby_public_website", "lever_home_page_link", "greenhouse_job_url_origin", "greenhouse_job_ads",
                   "jsonld_organization_url", "board_link_home_text", "board_link")
 REFERENCE_NAME_BASIS = "reference_name_slug_domain"
+RATE_LIMIT_STOP_AFTER = 50
 USA_UK_CA = {"US": "US", "GB": "UK", "UK": "UK", "CA": "CA"}
 
 
@@ -240,16 +241,36 @@ class RunContext:
         self.timings[key] = time.monotonic() - started
 
 
+def undecided_boards(conn, boards: list[dict], ats: str | None) -> list[dict]:
+    """Boards with no decision, plus those whose last check only failed to get an answer."""
+    decided = {r[0] for r in conn.execute("SELECT DISTINCT board_id FROM identities")}
+    latest = store.latest_verifications(conn)
+    retry = {board_id for board_id, v in latest.items() if v["outcome"] in RETRYABLE}
+    scope = set(ats.split(",")) if ats else set(CORE_ATS)
+    return [b for b in boards if b["ats"] in scope and (b["id"] not in decided or b["id"] in retry)]
+
+
 def check_boards(ctx: RunContext, sample: list[dict]) -> list[dict]:
     """Stage 1: provider validation and the board's hosted page."""
     t = time.monotonic()
     results = []
     with ThreadPoolExecutor(max_workers=ctx.workers) as ex:
         # Round-robin across ATS so workers don't all queue behind one provider's rate limit.
-        futs = [ex.submit(stage_board, ctx.validator, ctx.client, b, ctx.costs) for b in interleave(sample)]
+        futs = {ex.submit(stage_board, ctx.validator, ctx.client, b, ctx.costs): b for b in interleave(sample)}
+        in_a_row: Counter = Counter()
+        stopped: set[str] = set()
         for i, f in enumerate(as_completed(futs), 1):
+            if f.cancelled():
+                continue
             r = f.result()
             results.append(r)
+            ats = r["board"]["ats"]
+            in_a_row[ats] = in_a_row[ats] + 1 if r["outcome"] == RATE_LIMITED else 0
+            if in_a_row[ats] >= RATE_LIMIT_STOP_AFTER and ats not in stopped:
+                # Asking again only prolongs the limit. Boards not reached stay undecided for a later run.
+                stopped.add(ats)
+                skipped = sum(other.cancel() for other, board in futs.items() if board["ats"] == ats)
+                ctx.emit("rate_limit_stop", ats=ats, boards_left=skipped)
             v = r["validation"]
             with ctx.conn:
                 ctx.conn.execute(
@@ -442,9 +463,7 @@ def select_boards(conn, args, emit) -> list[dict]:
         boards = [b for b in boards if b["sources"] == [args.only_source]]
         emit("only_source", source=args.only_source, boards=len(boards))
     if args.only_undecided:
-        known = {r[0] for r in conn.execute("SELECT DISTINCT board_id FROM identities")}
-        scope = set(args.ats.split(",")) if args.ats else set(CORE_ATS)
-        boards = [b for b in boards if b["id"] not in known and b["ats"] in scope]
+        boards = undecided_boards(conn, boards, args.ats)
         emit("only_undecided", boards=len(boards))
     if args.board_ids:
         wanted = {int(line) for line in Path(args.board_ids).read_text().split()}
