@@ -51,6 +51,8 @@ BOARD_ATTESTED = ("careersite_redirect_domain", "board_job_ad_link", "vendor_job
                   "jsonld_organization_url", "board_link_home_text", "board_link")
 REFERENCE_NAME_BASIS = "reference_name_slug_domain"
 RATE_LIMIT_STOP_AFTER = 50
+# The widget already answers with name and description; a heavy page per board only runs into the rate limit.
+WIDGET_ONLY_ATS = ("workable",)
 USA_UK_CA = {"US": "US", "GB": "UK", "UK": "UK", "CA": "CA"}
 
 
@@ -99,10 +101,13 @@ def stage_board(validator: BoardValidator, client: HttpClient, b: dict, costs: "
     if outcome in LIVE:
         board = board_from_validation(cand, v)
         res["careersite_url"] = board.careersite_url
-        summary, html = _fetch_raw(client, board.careersite_url)
-        costs.add("board_page_fetches")
-        res["board_page"] = summary
-        res["board_extract"] = careersite.extract(html, summary.get("final_url") or board.careersite_url) if html else None
+        if b["ats"] in WIDGET_ONLY_ATS:
+            res["board_page"], res["board_extract"] = None, None
+        else:
+            summary, html = _fetch_raw(client, board.careersite_url)
+            costs.add("board_page_fetches")
+            res["board_page"] = summary
+            res["board_extract"] = careersite.extract(html, summary.get("final_url") or board.careersite_url) if html else None
         if b["ats"] in (WORKDAY, ICIMS) and (v.get("jobs_count") or 0) > 0:
             res["vendor_identity"] = vendor_identity(validator, b["ats"], v.get("code_validated") or b["code"])
             costs.add("vendor_identity_fetches", 2)

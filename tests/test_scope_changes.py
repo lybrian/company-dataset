@@ -276,3 +276,41 @@ def test_fast_mode_does_not_loosen_workable():
     from company_dataset.config import FAST_RATE_LIMITS
 
     assert "workable" not in FAST_RATE_LIMITS
+
+
+def test_open_jobs_keeps_only_live_boards_on_supported_ats():
+    from company_dataset.sources import open_jobs
+
+    data = {"ats": {"greenhouse": ["acme", "../bad path"], "workable": ["1000heads"], "paycom": ["ABC123"]}, "gone": {"greenhouse": ["closed"]}}
+    tokens = open_jobs.tokens_from(data, "https://example.test/slugs.json")
+    assert sorted(k for k in tokens) == [("greenhouse", "acme"), ("workable", "1000heads")]
+    assert tokens[("greenhouse", "acme")] == ("acme", "", "https://example.test/slugs.json")
+
+
+def test_open_jobs_tokens_carry_no_company_name(tmp_path):
+    from company_dataset.sources import open_jobs
+    from company_dataset.sources._harvest import write_tokens
+
+    path = tmp_path / "tokens.csv"
+    write_tokens(path, open_jobs.tokens_from({"ats": {"lever": ["acme"], "workable": ["beta"]}, "gone": {}}, "u"))
+    records, rejects = open_jobs.parse(path)
+    assert sorted((r.ats, r.code) for r in records) == [("lever", "acme"), ("workable", "beta")]
+    assert all(r.name is None for r in records) and not rejects
+
+
+def test_workable_validation_reads_only_the_widget_endpoint():
+    from company_dataset import enrich
+    from company_dataset.validate import BoardValidation
+
+    class Validator:
+        def validate_one(self, cand):
+            return BoardValidation(ats="workable", code="acme", status="valid", http_status=200, jobs_count=2, code_validated="acme", company_name="Acme", checked_at="t")
+
+    class NoPages:
+        def get(self, *a, **k):
+            raise AssertionError("no page requests for Workable")
+
+    costs = enrich.Costs()
+    board = {"id": 1, "ats": "workable", "code": "acme", "codes": ["acme"], "region": None, "names": [], "sources": []}
+    res = enrich.stage_board(Validator(), NoPages(), board, costs)
+    assert res["outcome"] == "verified_live" and res["board_page"] is None and res["board_extract"] is None
