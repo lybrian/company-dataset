@@ -27,15 +27,52 @@ def test_describes_company(name, text, ok):
 @pytest.mark.parametrize("method,text,name,ok", [
     ("board_page_meta", "BECOME A PART OF THE NIMBLE SUCCESS STORY NOW! Great things are happening here at this company every day.", "Nimble Credit Solutions", False),
     ("board_page_meta", "Making happier residents, one community at a time, all across the country and for many years to come.", "KMG Prestige", False),
-    ("board_page_meta", "6037 is a venture partnership within the Genesis ecosystem, investing in promising early-stage products.", "6037", True),
     ("careers_page_meta", "We help people grow, and we think that you are going to love it here with all of us every day.", "Acme", False),
     ("homepage_paragraph", "Capsules can be refrozen if not used immediately, which is why Cometeer is a great choice for travel.", "Cometeer", False),
     ("about_page_paragraph", "MAP International is a Christ-centered global health organization guided by a vision of a healthier world.", "MAP International", True),
     # The vendor's own record and a homepage's meta are the company speaking for itself: other rules cover them.
     ("homepage_meta", "Don't settle for cheap swag. We offer remarkable goods branded with your company logo, and much more.", "Clove & Twine", True),
     ("provider_description", "We make great things for great customers, all around the world, every single day of the year.", "Acme", True),
-    ("smartrecruiters_company_description", "Founded in Stuttgart in 1886, the group has a unique corporate culture based on trust and responsibility.", "Bosch", True),
+    ("smartrecruiters_company_description", "Founded in Stuttgart in 1886, Bosch has a unique corporate culture based on trust and responsibility.", "Bosch", True),
     ("job_ad_about_section", "Our team builds tools that many of the largest firms in the world depend on to run every day.", "Acme", True),
 ])
 def test_acceptable_depends_on_where_the_text_came_from(method, text, name, ok):
     assert acceptable(method, text, name) is ok
+
+
+@pytest.mark.parametrize("name,text,ok", [
+    ("Kirby Nagelhout Construction Company", "Kirby Nagelhout Construction Company (KNCC) was founded in Bend, Oregon in 1986 and has grown to become one of the largest contractors.", True),
+    ("The Brooklyn Kindergarten Society", "The Brooklyn Kindergarten Society (BKS) is the original early childhood provider, helping families in Brooklyn for over 130 years.", True),
+    ("K3 Solutions LLC", "Founded in May 2006, K3 Solutions LLC (K3) is a full-service management and information technology consulting firm.", True),
+    ("Motley Fool Ventures", "Motley Fool Ventures is an early-stage venture capital fund powered by The Motley Fool's brand and investing approach.", True),
+    ("Accelerate360", "At Accelerate360, we leverage our experience and innovation to provide a turnkey solution for retailers and brands.", True),
+    ("Interfold", "At Interfold, we're re-imagining business lending for the 21st century with an AI platform for banks and customers.", True),
+    ("Spacewell", "Spacewell, an international SaaS company, develops IoT solutions to simplify facility operations and reduce energy use.", True),
+    ("Arcadia Science", "All work conducted by Arcadia Science is the intellectual property of Arcadia Science, and we publish selected work here.", False),
+    ("Octant Bio", "Sri is a co-founder at Octant and an Associate Professor at UCLA in the Chemistry and Biochemistry Department.", False),
+    ("Propel America", "Propel America's Medical Assistant pathway was one of several options she considered to invest her time and increase earnings.", False),
+    ("Kobie Marketing", "Kobie LaunchPad 2026 is a university AI hackathon open to engineering and computer science students across India this year.", False),
+    ("Gravitics, Inc", "Gravitics offers 3 Cigna medical plans with a generous company subsidy along with dental and vision plans for all staff.", False),
+    ("Lumerate", "Lumerate is a fantastic place to work. Most individuals who choose to become Lumerites prefer to stay for the long haul.", False),
+    ("Flow Traders", "Flow Traders offers a Global Rotation program open to candidates across all regions, because sharing knowledge is crucial.", False),
+    ("Seaport Global Holdings LLC", "Seaport Global will host an enrichment program intended to provide a select group of undergraduates with exposure to professionals.", False),
+    ("Merit America", "What made Merit America special for me was a shared experience and a coach who wants nothing more than your success.", False),
+    ("mta", "Further, MTA provides quality engineering, assessment, and testing support on many different programs for its government customers.", False),
+])
+def test_paragraphs_need_the_company_as_grammatical_subject(name, text, ok):
+    assert acceptable("homepage_paragraph", text, name) is ok
+
+
+@pytest.mark.parametrize("name,text,ok", [
+    ("Bosch", "Bosch was founded in Stuttgart in 1886 by Robert Bosch and has a unique corporate culture based on trust.", True),
+    ("Alphabe Insight Inc", "At Biz Voice Boost, we believe that meaningful connections drive business success for the brands that we serve.", False),
+    ("My NRMA", "At SIXT Australia, we're revolutionizing car rental. We believe it should be as exciting as a road trip for everyone.", False),
+    ("krg technology inc", "Kumar.T | Resourcing Executive KRG Technologies, Inc., 25000 Avenue Stanford, Suite #243, Valencia, CA 91355 Direct : 661-558-0000", False),
+])
+def test_smartrecruiters_text_must_be_about_the_account_holder(name, text, ok):
+    assert acceptable("smartrecruiters_company_description", text, name) is ok
+
+
+@pytest.mark.parametrize("method", ["careers_page_paragraph", "careers_page_meta", "board_page_meta"])
+def test_careers_and_board_text_is_never_used_even_when_it_reads_well(method):
+    assert acceptable(method, "Acme is a leading provider of warehouse robots for regional distribution centers everywhere.", "Acme") is False
