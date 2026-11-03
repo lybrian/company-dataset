@@ -86,3 +86,32 @@ def test_simplify_listings_are_seed_files():
 
     assert any("New-Grad-Positions" in s and s.endswith("listings.json") for s in SEEDS)
     assert any("Summer2026-Internships" in s and s.endswith("listings.json") for s in SEEDS)
+
+
+def test_stopped_wayback_harvest_can_still_produce_tokens(tmp_path):
+    from company_dataset.sources import wayback_cdx as wb
+
+    out = tmp_path / wb.META.name
+    out.mkdir()
+    (out / "pages.jsonl").write_text(json.dumps({"target": "t", "page": 0, "tokens": [["lever", "acme", "", "u1"], ["lever", "ACME", "", "u2"]]}) + "\n" + json.dumps({"target": "t", "page": 1, "tokens": [["ashby", "beta", "", "u3"]]}) + "\n")
+    assert wb.rebuild_tokens(tmp_path) == 2
+    records, _ = wb.parse(out / "tokens.csv")
+    assert sorted(r.code for r in records) == ["acme", "beta"]
+
+
+def test_stopped_kaggle_harvest_can_still_produce_tokens(tmp_path):
+    from company_dataset.sources import kaggle_datasets as kg
+
+    out = tmp_path / kg.META.name
+    out.mkdir()
+    (out / "datasets.jsonl").write_text(json.dumps({"dataset": "a/b", "license": "MIT", "status": "read", "tokens": [["lever", "acme", ""]]}) + "\n")
+    assert kg.rebuild_tokens(tmp_path) == 1
+
+
+def test_fast_limits_only_loosen_the_two_rate_limited_vendors():
+    from company_dataset.config import FAST_RATE_LIMITS, resolve_rate_limits
+
+    normal, fast = resolve_rate_limits(env={}), resolve_rate_limits(overrides=FAST_RATE_LIMITS, env={})
+    assert fast["smartrecruiters"]["max_concurrent"] > normal["smartrecruiters"]["max_concurrent"]
+    assert fast["breezy"]["delay_seconds"] < normal["breezy"]["delay_seconds"]
+    assert fast["workday"] == normal["workday"]

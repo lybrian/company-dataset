@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from company_dataset import careersite, reference as reference_mod, store, wikidata
-from company_dataset.config import CACHE_DIR_NAME, resolve_rate_limits
+from company_dataset.config import CACHE_DIR_NAME, FAST_PER_HOST_INTERVAL, FAST_RATE_LIMITS, FAST_WORKERS, resolve_rate_limits
 from company_dataset.enrichment import (
     ENGLISH_HEADERS, board_from_validation, clean_description, content_website_candidates, english_variant_urls,
     fetch_greenhouse_content, fetch_page, greenhouse_content_url, is_auxiliary_board, is_english, is_test_board, landing_site,
@@ -474,6 +474,7 @@ def main(argv=None) -> int:
     p.add_argument("--only-source", default="", help="sample only boards that no other source lists (new discoveries)")
     p.add_argument("--only-undecided", action="store_true", help="only target-ATS boards that have no identity decision yet")
     p.add_argument("--board-ids", default="", help="file of board ids, whitespace separated: work on these boards only")
+    p.add_argument("--fast", action="store_true", help="higher concurrency and request rates; watch the report for rate-limited boards")
     p.add_argument("--require-frozen", default="", help="methodology freeze file; refuse to run if the code differs")
     a = p.parse_args(argv)
     if a.require_frozen:
@@ -500,9 +501,10 @@ def main(argv=None) -> int:
     write_sample(out, sample)
     emit("sample", size=len(sample), by_ats=dict(Counter(b["ats"] for b in sample)))
 
-    client = HttpClient(timeout=20, per_host_interval=0.5, max_attempts=3)
-    ctx = RunContext(conn=conn, run=a.run, raw=Path(a.raw), workers=a.workers, client=client, emit=emit,
-                     validator=BoardValidator(client, rate_limiter=AtsRateLimiter(resolve_rate_limits())))
+    client = HttpClient(timeout=20, per_host_interval=FAST_PER_HOST_INTERVAL if a.fast else 0.5, max_attempts=3)
+    limits = resolve_rate_limits(overrides=FAST_RATE_LIMITS) if a.fast else resolve_rate_limits()
+    ctx = RunContext(conn=conn, run=a.run, raw=Path(a.raw), workers=FAST_WORKERS if a.fast else a.workers, client=client, emit=emit,
+                     validator=BoardValidator(client, rate_limiter=AtsRateLimiter(limits)))
     ctx.timed("sample", t)
 
     results = check_boards(ctx, sample)

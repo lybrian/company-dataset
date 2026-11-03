@@ -123,6 +123,21 @@ def harvest(raw_dir: Path, client: HttpClient) -> dict:
     return {"datasets_read": len(done), "skipped_for_license": len(skipped), "skipped_for_size": len(too_big), "boards": len(tokens)}
 
 
+def rebuild_tokens(raw_dir: Path) -> int:
+    """tokens.csv and report.json from the datasets read so far, for a harvest stopped before the end."""
+    out = Path(raw_dir) / META.name
+    tokens: dict = {}
+    read = []
+    with open(out / "datasets.jsonl", encoding="utf-8") as fh:
+        for line in fh:
+            entry = json.loads(line)
+            read.append({k: entry[k] for k in ("dataset", "license", "status")} | {"boards": len(entry["tokens"])})
+            for ats, code, region in entry["tokens"]:
+                tokens.setdefault((ats, code.casefold()), (code, region, f"https://www.kaggle.com/datasets/{entry['dataset']}"))
+    (out / "report.json").write_text(json.dumps({"read": read, "stopped_early": True}, indent=1))
+    return write_tokens(out / META.filename, tokens)
+
+
 def parse(path: Path):
     return parse_tokens(path, META.name)
 
@@ -130,7 +145,11 @@ def parse(path: Path):
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="company_dataset.sources.kaggle_datasets")
     p.add_argument("--raw", default="data/raw")
+    p.add_argument("--rebuild", action="store_true", help="write tokens.csv from datasets read so far and stop")
     a = p.parse_args(argv)
+    if a.rebuild:
+        print(json.dumps({"boards": rebuild_tokens(Path(a.raw))}))
+        return 0
     print(json.dumps(harvest(Path(a.raw), HttpClient(timeout=600, per_host_interval=1.0, max_attempts=2)), indent=1))
     return 0
 

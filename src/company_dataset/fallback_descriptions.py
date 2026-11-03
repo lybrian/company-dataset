@@ -24,6 +24,7 @@ from html.parser import HTMLParser
 from urllib.parse import quote
 
 from company_dataset import store
+from company_dataset.config import FAST_PER_HOST_INTERVAL, FAST_WORKERS
 from company_dataset.description_rules import acceptable
 from company_dataset.enrich import PARKED_RE
 from company_dataset.enrichment import ENGLISH_HEADERS, clean_description, homepage_description, is_english, parse_page
@@ -305,11 +306,12 @@ def main(argv=None) -> int:
     p.add_argument("--db", required=True)
     p.add_argument("--run", required=True)
     p.add_argument("--from-runs", required=True)
+    p.add_argument("--fast", action="store_true", help="higher concurrency and request rates")
     p.add_argument("--confirmed-only", action="store_true", help="only boards that could be delivered now")
     a = p.parse_args(argv)
     conn = store.connect(a.db)
-    client = HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2)
-    print(json.dumps(run(conn, a.run, [r for r in a.from_runs.split(",") if r], client, utc_now(), confirmed_only=a.confirmed_only), indent=1))
+    client = HttpClient(timeout=20, per_host_interval=FAST_PER_HOST_INTERVAL if a.fast else 0.5, max_attempts=2)
+    print(json.dumps(run(conn, a.run, [r for r in a.from_runs.split(",") if r], client, utc_now(), workers=FAST_WORKERS if a.fast else 12, confirmed_only=a.confirmed_only), indent=1))
     return 0
 
 

@@ -134,6 +134,17 @@ def harvest(raw_dir: Path, client: HttpClient, sleep=time.sleep, targets=TARGETS
     return {"pages_fetched": fetched, "boards": len(tokens), "complete": complete}
 
 
+def rebuild_tokens(raw_dir: Path) -> int:
+    """tokens.csv from the pages finished so far, for a harvest stopped before the end."""
+    out = Path(raw_dir) / META.name
+    tokens: dict = {}
+    with open(out / "pages.jsonl", encoding="utf-8") as fh:
+        for line in fh:
+            for ats, code, region, url in json.loads(line)["tokens"]:
+                tokens.setdefault((ats, code.casefold()), (code, region, url))
+    return write_tokens(out / META.filename, tokens)
+
+
 def parse(path: Path):
     return parse_tokens(path, META.name)
 
@@ -142,7 +153,11 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="company_dataset.sources.wayback_cdx")
     p.add_argument("--raw", default="data/raw")
     p.add_argument("--max-pages", type=int, default=None)
+    p.add_argument("--rebuild", action="store_true", help="write tokens.csv from finished pages and stop")
     a = p.parse_args(argv)
+    if a.rebuild:
+        print(json.dumps({"boards": rebuild_tokens(Path(a.raw))}))
+        return 0
     client = HttpClient(timeout=180, max_attempts=1, per_host_interval=MIN_SECONDS_BETWEEN_REQUESTS)
     for attempt in range(MAX_RESTARTS):
         try:

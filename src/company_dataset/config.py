@@ -53,6 +53,13 @@ def _parse_rate_limit_value(field: str, raw: str, var: str):
     return value
 
 
+# Run-now settings for the two vendors with a shared rate limit. Above this, 429s turn real boards into
+# inconclusive results, which costs more accuracy and time than it saves.
+FAST_RATE_LIMITS = {"smartrecruiters": {"max_concurrent": 8, "delay_seconds": 0.1}, "breezy": {"max_concurrent": 16, "delay_seconds": 0.05}}
+FAST_PER_HOST_INTERVAL = 0.1
+FAST_WORKERS = 64
+
+
 def resolve_rate_limits(
     overrides: dict[str, dict] | None = None,
     env=None,

@@ -23,7 +23,7 @@ from company_dataset.enrichment import (
     board_from_validation, clean_description, english_variant_urls, fetch_page, is_english, landing_site, linkedin_url,
 )
 from company_dataset.http import HttpClient
-from company_dataset.config import resolve_rate_limits
+from company_dataset.config import FAST_PER_HOST_INTERVAL, FAST_RATE_LIMITS, FAST_WORKERS, resolve_rate_limits
 from company_dataset.enrich import NON_MAIN_LABELS, PARKED_RE, board_ownership, official_landing, verify_homepage, website_supported
 from company_dataset.export import _latest_field_evidence_per_board_field, decided_rows
 from company_dataset.identity import (
@@ -426,6 +426,7 @@ def main(argv=None) -> int:
     p.add_argument("--run", required=True)
     p.add_argument("--from-runs", default="", help="reresolve: comma-separated runs whose newest decision per board is the starting point")
     p.add_argument("--from-run", default="recovery1", help="reverify-recovery: the run whose websites are checked")
+    p.add_argument("--fast", action="store_true", help="final-checks: higher concurrency and request rates")
     p.add_argument("--refetch", action="store_true", help="reverify-recovery: fetch every site again instead of using stored pages")
     a = p.parse_args(argv)
     conn = store.connect(a.db)
@@ -434,8 +435,9 @@ def main(argv=None) -> int:
     elif a.step == "reresolve":
         out = reresolve_identities(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
     elif a.step == "final-checks":
-        client = HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2)
-        out = final_checks(conn, a.run, [r for r in a.from_runs.split(",") if r], client, BoardValidator(client, rate_limiter=AtsRateLimiter(resolve_rate_limits())), utc_now())
+        client = HttpClient(timeout=20, per_host_interval=FAST_PER_HOST_INTERVAL if a.fast else 0.5, max_attempts=3)
+        limits = resolve_rate_limits(overrides=FAST_RATE_LIMITS) if a.fast else resolve_rate_limits()
+        out = final_checks(conn, a.run, [r for r in a.from_runs.split(",") if r], client, BoardValidator(client, rate_limiter=AtsRateLimiter(limits)), utc_now(), workers=FAST_WORKERS if a.fast else 16)
     elif a.step == "descriptions-cached":
         out = recover_descriptions_cached(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
     elif a.step == "descriptions-network":
