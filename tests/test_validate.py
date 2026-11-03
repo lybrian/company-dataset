@@ -738,7 +738,7 @@ def test_cli_rate_limit_overrides_are_passed(monkeypatch):
     limits = captured["rate_limits"]
     assert limits["smartrecruiters"] == {"max_concurrent": 1, "delay_seconds": 0.25}
     assert limits["breezy"] == {"max_concurrent": 3, "delay_seconds": 1.5}
-    assert limits["workable"] == {"max_concurrent": 3, "delay_seconds": 0.3}
+    assert limits["workable"] == {"max_concurrent": 1, "delay_seconds": 0.7}
 
 
 def test_cli_rejects_unknown_ats(monkeypatch):
