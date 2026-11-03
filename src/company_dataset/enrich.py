@@ -639,13 +639,13 @@ def resolve_and_record(conn, run: str, r: dict, chosen: dict | None, ref, wd: di
         elif chosen.get("english_description"):
             description, d_method = chosen["english_description"], "homepage_meta_english_page"
         elif d:
-            row["flags"].append("homepage_description_not_english")
+            description, d_method = d, "homepage_meta_non_english"
     if not description:
         d = clean_description(v.get("description"))
-        if d and is_english(d):
+        if d:
             description, d_method = d, f"{b['ats']}_vendor_description"
     if description:
-        ev("description", description, d_method, {"homepage_meta": (chosen or {}).get("url"), "homepage_meta_english_page": (chosen or {}).get("english_url")}.get(d_method, endpoint), description[:200])
+        ev("description", description, d_method, {"homepage_meta": (chosen or {}).get("url"), "homepage_meta_non_english": (chosen or {}).get("url"), "homepage_meta_english_page": (chosen or {}).get("english_url")}.get(d_method, endpoint), description[:200])
 
     country, c_method = "", ""
     if website:

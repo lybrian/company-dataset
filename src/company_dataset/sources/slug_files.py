@@ -19,6 +19,7 @@ from pathlib import Path
 from company_dataset.http import HttpClient, RequestError
 from company_dataset.models import SourceMeta
 from company_dataset.normalize import ASHBY, BREEZY, CORE_ATS, GREENHOUSE, LEVER, SMARTRECRUITERS, clean_code
+from company_dataset.platforms import WORKABLE
 from company_dataset.sources._harvest import boards_in_text, parse_tokens, plausible_slug, write_tokens
 from company_dataset.sources.github_lists import MAX_FILE_BYTES, PER_PAGE, SECONDS_BETWEEN_SEARCHES, _gh, raw_url
 
@@ -28,7 +29,8 @@ QUERIES = ["filename:slugs.json greenhouse", "filename:slugs.json lever", "filen
            "filename:board_tokens", "filename:ats_companies", "filename:boards.json greenhouse ashby", "filename:companies.yaml greenhouse lever ashby", "filename:companies.yml greenhouse lever",
            "filename:companies.json greenhouse lever ashby", "filename:companies.csv greenhouse lever", "filename:targets.json greenhouse lever", "filename:sources.json greenhouse lever ashby"]
 PAGES_PER_QUERY = 3
-_ATS_WORDS = {"greenhouse": GREENHOUSE, "gh": GREENHOUSE, "lever": LEVER, "ashby": ASHBY, "ashbyhq": ASHBY, "smartrecruiters": SMARTRECRUITERS, "smart_recruiters": SMARTRECRUITERS, "breezy": BREEZY, "breezyhr": BREEZY, "breezy_hr": BREEZY}
+_ATS_WORDS = {"greenhouse": GREENHOUSE, "gh": GREENHOUSE, "lever": LEVER, "ashby": ASHBY, "ashbyhq": ASHBY, "smartrecruiters": SMARTRECRUITERS, "smart_recruiters": SMARTRECRUITERS, "breezy": BREEZY, "breezyhr": BREEZY, "breezy_hr": BREEZY, "workable": WORKABLE}
+VENDOR_WORDS = frozenset(("www", "apply", "resources", "help", "support", "jobs", "careers", "blog", "app", "api", "status", "docs", "mail", "marketing", "go", "info", "assets", "cdn", "static"))
 _ATS_FIELDS = ("ats", "platform", "provider", "source", "ats_type", "atstype", "type", "vendor", "system", "ats_system")
 _SLUG_FIELDS = ("slug", "token", "board", "board_token", "boardtoken", "board_slug", "code", "ats_code", "identifier", "handle", "company_slug", "site", "id", "company")
 # Words a list of this kind often holds that are never a board.
@@ -55,7 +57,7 @@ def ats_in_name(text: str) -> str | None:
 
 
 def _usable(ats: str, value) -> str | None:
-    if not isinstance(value, str) or ats not in CORE_ATS:
+    if not isinstance(value, str) or (ats not in CORE_ATS and ats != WORKABLE):
         return None
     candidate = value.strip()
     if " " in candidate or "/" in candidate or candidate.lower() in _NOT_SLUGS:

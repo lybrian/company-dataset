@@ -19,10 +19,10 @@ def plausible_slug(code: str | None) -> bool:
     return bool(code) and bool(_SLUG_RE.match(code)) and not _NOT_A_BOARD_RE.match(code)
 
 
-def board_from_url(url: str) -> tuple[str, str, str] | None:
+def board_from_url(url: str, allowed=CORE_ATS) -> tuple[str, str, str] | None:
     """(ats, code, region) when a URL is a target-ATS board with a plausible identifier."""
     parsed = parse_board_url(url)
-    if not parsed or parsed.ats not in CORE_ATS:
+    if not parsed or parsed.ats not in allowed:
         return None
     code = clean_code(parsed.ats, parsed.code)
     if not plausible_slug(code):
@@ -44,7 +44,7 @@ def write_tokens(path: Path, tokens: dict[tuple[str, str], tuple[str, str, str]]
     return len(tokens)
 
 
-def parse_tokens(path: Path, source: str) -> tuple[list[SourceRecord], list[Reject]]:
+def parse_tokens(path: Path, source: str, allowed=CORE_ATS) -> tuple[list[SourceRecord], list[Reject]]:
     records: list[SourceRecord] = []
     rejects: list[Reject] = []
     if not Path(path).exists():
@@ -53,7 +53,7 @@ def parse_tokens(path: Path, source: str) -> tuple[list[SourceRecord], list[Reje
         for i, row in enumerate(csv.DictReader(fh), start=2):
             ref = f"line {i}"
             ats, raw = (row.get("ats") or "").strip(), (row.get("code") or "").strip()
-            if ats not in CORE_ATS:
+            if ats not in allowed:
                 rejects.append(Reject(source=source, reason="unsupported_ats", detail=ats, row_ref=ref))
                 continue
             code = clean_code(ats, raw)
@@ -67,14 +67,14 @@ def parse_tokens(path: Path, source: str) -> tuple[list[SourceRecord], list[Reje
 
 # Any URL on a target ATS domain. Finding the board in it is parse_board_url's job: a slug regex
 # here would read Breezy's path instead of its subdomain and miss job-boards.greenhouse.io.
-ATS_URL_RE = re.compile(r"https?://[A-Za-z0-9.-]*(?:greenhouse\.io|lever\.co|ashbyhq\.com|smartrecruiters\.com|breezy\.hr)[^\s\"'<>)\]}\\,|`]*", re.I)
+ATS_URL_RE = re.compile(r"https?://[A-Za-z0-9.-]*(?:greenhouse\.io|lever\.co|ashbyhq\.com|smartrecruiters\.com|breezy\.hr|workable\.com)[^\s\"'<>)\]}\\,|`]*", re.I)
 
 
-def boards_in_text(text: str, evidence: str) -> dict[tuple[str, str], tuple[str, str, str]]:
+def boards_in_text(text: str, evidence: str, allowed=CORE_ATS) -> dict[tuple[str, str], tuple[str, str, str]]:
     """Every target-ATS board a piece of text links to, in the form write_tokens takes."""
     found: dict[tuple[str, str], tuple[str, str, str]] = {}
     for url in ATS_URL_RE.findall(text or ""):
-        board = board_from_url(url)
+        board = board_from_url(url, allowed)
         if board:
             found.setdefault((board[0], board[1].casefold()), (board[1], board[2], evidence))
     return found

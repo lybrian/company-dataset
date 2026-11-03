@@ -28,7 +28,7 @@ from pathlib import Path
 from company_dataset import store
 from company_dataset.description_rules import acceptable
 from company_dataset.enrich import REFERENCE_NAME_BASIS, website_supported
-from company_dataset.enrichment import clean_description, clean_name, is_english, is_test_board
+from company_dataset.enrichment import clean_description, clean_name, is_test_board
 from company_dataset.identity import CONFIRMED, _fold, careers_branded_domain, cluster_companies, linkedin_compatible
 from company_dataset.normalize import CORE_ATS, SMARTRECRUITERS, canonical_board_url, clean_website, host_of, normalize_linkedin
 from company_dataset.sources import SOURCES
@@ -217,14 +217,14 @@ def _normalize_url(field: str, value: str) -> str:
     return value
 
 
-def _latest_identity_per_board(conn, runs: list[str]) -> dict[int, dict]:
-    """Newest identity decision per target-ATS board across the given runs."""
+def _latest_identity_per_board(conn, runs: list[str], allowed=CORE_ATS) -> dict[int, dict]:
+    """Newest identity decision per board of these ATS across the given runs."""
     marks = ",".join("?" * len(runs))
-    ats = ",".join("?" * len(CORE_ATS))
+    ats = ",".join("?" * len(allowed))
     q = (f"SELECT i.*, b.ats, b.code, b.region FROM identities i JOIN boards b ON b.id=i.board_id JOIN"
          f" (SELECT board_id, MAX(decided_at || '|' || run) AS pick FROM identities WHERE run IN ({marks}) GROUP BY board_id) t"
          f" ON i.board_id=t.board_id AND (i.decided_at || '|' || i.run)=t.pick WHERE b.ats IN ({ats})")
-    return {r["board_id"]: r for r in conn.execute(q, (*runs, *CORE_ATS))}
+    return {r["board_id"]: r for r in conn.execute(q, (*runs, *allowed))}
 
 
 def _latest_field_evidence_per_board_field(conn, runs: list[str]) -> dict[tuple[int, str], dict]:
@@ -257,7 +257,7 @@ def _rejected_urls(conn, runs: list[str]) -> dict[tuple[int, str, str], str]:
 
 def _usable_description(text: str) -> bool:
     """The current rules, applied to stored text. Only removes: a value that passes is kept as recorded."""
-    return bool(clean_description(text)) and is_english(text) and not _PLACEHOLDER_RE.search(text)
+    return bool(clean_description(text)) and not _PLACEHOLDER_RE.search(text)
 
 
 def _dormant_name_guess(row: dict) -> bool:
@@ -267,9 +267,9 @@ def _dormant_name_guess(row: dict) -> bool:
             and row["website_method"].startswith(REFERENCE_NAME_BASIS))
 
 
-def decided_rows(conn, runs: list[str]) -> list[dict]:
+def decided_rows(conn, runs: list[str], allowed=CORE_ATS) -> list[dict]:
     """One merged row per board: newest identity run + per-field newest verified evidence across all runs."""
-    identities = _latest_identity_per_board(conn, runs)
+    identities = _latest_identity_per_board(conn, runs, allowed)
     evidence = _latest_field_evidence_per_board_field(conn, runs)
     checks = _latest_checks(conn, runs)
     rejected = _rejected_urls(conn, runs)
@@ -376,7 +376,7 @@ def _evidence_index(conn, runs: list[str]) -> dict[tuple[int, str], set]:
     return index
 
 
-def quality_gates(verified: list[dict], evidence: dict, fresh_origin: str | None) -> dict:
+def quality_gates(verified: list[dict], evidence: dict, fresh_origin: str | None, allowed=CORE_ATS) -> dict:
     """Everything a delivered row must satisfy, checked on the output rather than assumed from how it was built."""
     failures: dict[str, list[str]] = defaultdict(list)
     seen = set()
@@ -386,7 +386,7 @@ def quality_gates(verified: list[dict], evidence: dict, fresh_origin: str | None
         ref = f"{r['ats_system']}:{r['ats_code']}"
         if any(not (r[c] or "").strip() for c in MANDATORY):
             failures["mandatory_fields"].append(ref)
-        if r["ats_system"] not in CORE_ATS:
+        if r["ats_system"] not in allowed:
             failures["ats_scope"].append(ref)
         if r["identity_status"] != CONFIRMED or r["verification_status"] not in LIVE:
             failures["confirmed_and_live"].append(ref)
@@ -444,12 +444,8 @@ def _evidence_rows(conn, runs: list[str], delivered: list[dict]) -> list[dict]:
     return rows
 
 
-def build_export(conn, runs: list[str], out_dir: Path, fresh_origin: str | None = None) -> dict:
-    """fresh_origin: the run whose provider re-check every verified row must have passed."""
-    out_dir = Path(out_dir)
-    if out_dir.exists() and any(out_dir.iterdir()):
-        raise FileExistsError(out_dir)
-    rows = decided_rows(conn, runs)
+def _companies(rows: list[dict], fresh_origin: str | None) -> tuple[list[dict], int, int]:
+    """(one row per company with missing_fields set, companies merged from several boards, LinkedIn handles cleared)."""
     confirmed = [r for r in rows if r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE]
     clusters = cluster_companies([{"name": r["company_name"], "website_url": r["website_url"], "website_verified": bool(r["website_url"]),
                                    "linkedin_url": r["linkedin_url"], "ats_system": r["ats_system"], "ats_code": r["ats_code"]} for r in confirmed])
@@ -465,14 +461,44 @@ def build_export(conn, runs: list[str], out_dir: Path, fresh_origin: str | None 
     linkedin_cleared = apply_linkedin_policy(companies)
     for r in companies:
         r["missing_fields"] = ";".join(_missing(r, fresh_origin))
+    return companies, merged, linkedin_cleared
+
+
+def build_export(conn, runs: list[str], out_dir: Path, fresh_origin: str | None = None, extra_ats: tuple = ()) -> dict:
+    """fresh_origin: the run whose provider re-check every verified row must have passed. Without it the
+    report says so. extra_ats: ATS outside the target five, each delivered only in its own <ats>_companies.csv."""
+    out_dir = Path(out_dir)
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise FileExistsError(out_dir)
+    rows = decided_rows(conn, runs)
+    confirmed = [r for r in rows if r["identity_status"] == CONFIRMED and r["verification_status"] in LIVE]
+    companies, merged, linkedin_cleared = _companies(rows, fresh_origin)
     verified = [r for r in companies if not r["missing_fields"]]
     incomplete = [r for r in companies if r["missing_fields"]]
     unresolved = [{**r, "endpoint_public_jobs": canonical_board_url(r["ats_system"], r["ats_code"], r["region"])} for r in rows
                   if r["identity_status"] in ("identity_unresolved", "identity_mismatch") and r["verification_status"] in LIVE]
-    gates = quality_gates(verified, _evidence_index(conn, runs), fresh_origin)
+    evidence_index = _evidence_index(conn, runs)
+    gates = quality_gates(verified, evidence_index, fresh_origin)
+    extra: dict[str, list[dict]] = {}
+    extra_report: dict[str, dict] = {}
+    for ats in extra_ats:
+        extra_rows = decided_rows(conn, runs, allowed=(ats,))
+        extra_companies, extra_merged, _ = _companies(extra_rows, fresh_origin)
+        extra[ats] = [r for r in extra_companies if not r["missing_fields"]]
+        extra_gates = quality_gates(extra[ats], evidence_index, fresh_origin, allowed=(ats,))
+        extra_report[ats] = {"boards_decided": len(extra_rows), "live_boards": sum(1 for r in extra_rows if r["verification_status"] in LIVE),
+                             "companies_verified": len(extra[ats]), "companies_incomplete": len(extra_companies) - len(extra[ats]), "merged_companies": extra_merged,
+                             "unresolved_live_boards": sum(1 for r in extra_rows if r["identity_status"] in ("identity_unresolved", "identity_mismatch") and r["verification_status"] in LIVE),
+                             "optional_fields_in_verified": {c: sum(1 for r in extra[ats] if r[c]) for c in OPTIONAL}, "gates": extra_gates}
+        if not extra_gates["passed"]:
+            gates = {"passed": False, "failure_counts": {**gates.get("failure_counts", {}), **{f"{ats}:{k}": v for k, v in extra_gates["failure_counts"].items()}},
+                     "failures": {**gates.get("failures", {}), **{f"{ats}:{k}": v for k, v in extra_gates["failures"].items()}}}
     descriptions = Counter(r["description"].strip().casefold() for r in verified)
     report = {
         "runs": runs, "fresh_origin": fresh_origin, "gates": gates,
+        "fresh_checks": {"run": bool(fresh_origin), "note": "" if fresh_origin else "Not run for this export: rows carry the date of their last provider check, listed here. The zero-dead-endpoints gate was not applied.",
+                         "last_checked_by_date": dict(sorted(Counter((r["verification_date"] or "")[:10] for r in verified).items()))},
+        "extra_ats": extra_report,
         "boards_decided": len(rows),
         "live_boards": sum(1 for r in rows if r["verification_status"] in LIVE),
         "identity_confirmed_live_boards": len(confirmed),
@@ -500,6 +526,8 @@ def build_export(conn, runs: list[str], out_dir: Path, fresh_origin: str | None 
     _write(out_dir / "companies_verified.csv", VERIFIED_COLUMNS, verified)
     _write(out_dir / "companies_incomplete.csv", INCOMPLETE_COLUMNS, incomplete)
     _write(out_dir / "unresolved_boards.csv", UNRESOLVED_COLUMNS, unresolved)
+    for ats, ats_rows in extra.items():
+        _write(out_dir / f"{ats}_companies.csv", VERIFIED_COLUMNS, ats_rows)
     _write(out_dir / "evidence.csv", EVIDENCE_COLUMNS, _evidence_rows(conn, runs, companies))
     (out_dir / "sources.json").write_text(json.dumps(_source_summaries(conn, verified, incomplete), indent=1, sort_keys=True) + "\n")
     (out_dir / "qa_report.json").write_text(json.dumps(report, indent=1, sort_keys=True) + "\n")
@@ -516,9 +544,10 @@ def main(argv=None) -> int:
     which.add_argument("--runs", help="comma-separated run labels to merge")
     p.add_argument("--out", required=True)
     p.add_argument("--fresh-origin", help="--runs: the run whose provider re-check every verified row must have passed")
+    p.add_argument("--extra-ats", default="", help="--runs: comma-separated ATS delivered only in their own <ats>_companies.csv")
     a = p.parse_args(argv)
     conn = store.connect(a.db)
-    counts = run_export(conn, a.run, Path(a.out)) if a.run else build_export(conn, [r for r in a.runs.split(",") if r], Path(a.out), a.fresh_origin)
+    counts = run_export(conn, a.run, Path(a.out)) if a.run else build_export(conn, [r for r in a.runs.split(",") if r], Path(a.out), a.fresh_origin, tuple(x for x in a.extra_ats.split(",") if x))
     print(json.dumps(counts, indent=1))
     return 0
 

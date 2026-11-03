@@ -15,8 +15,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from company_dataset import store
 from company_dataset.enrichment import (
@@ -24,10 +25,10 @@ from company_dataset.enrichment import (
 )
 from company_dataset.http import HttpClient
 from company_dataset.config import FAST_PER_HOST_INTERVAL, FAST_RATE_LIMITS, FAST_WORKERS, resolve_rate_limits
-from company_dataset.enrich import NON_MAIN_LABELS, PARKED_RE, board_ownership, official_landing, verify_homepage, website_supported
+from company_dataset.enrich import NON_MAIN_LABELS, PARKED_RE, board_ownership, homepage_self_naming, official_landing, verify_homepage, website_supported
 from company_dataset.export import _latest_field_evidence_per_board_field, decided_rows
 from company_dataset.identity import (
-    CONFIRMED, careers_branded_domain, domain_compatible, linkedin_compatible, name_claims, registrable_domain, resolve_identity,
+    CONFIRMED, VENDOR_API, VENDOR_PAGE, careers_branded_domain, domain_compatible, linkedin_compatible, name_claims, registrable_domain, resolve_identity,
 )
 from company_dataset.ingest import load_boards
 from company_dataset.models import Candidate, utc_now
@@ -38,6 +39,7 @@ from company_dataset.verification import INVALID_IDENTIFIER, LIVE, VERIFIED_LIVE
 # Identity bases whose stored name is the vendor's own: the hosted page it came from is not stored.
 _VENDOR_BASES = ("vendor_only", "vendor_not_corroborated", "vendor")
 _FINAL_PAGE_STATUSES = ("ok", "http_404", "http_410")
+ATS_REGISTRABLE_DOMAINS = frozenset(("greenhouse.io", "lever.co", "ashbyhq.com", "smartrecruiters.com", "breezy.hr", "workable.com"))
 
 
 def backfill_smartrecruiters_existence(conn, run: str, now: str) -> dict:
@@ -197,7 +199,7 @@ def _carry_description(conn, run, board_id, page, on_careers, v, now, site):
     candidates.append((v["provider_description"], "provider_description", v["endpoint"]))
     for text, method, url in candidates:
         d = clean_description(text)
-        if d and is_english(d):
+        if d:
             _record_evidence(conn, run, board_id, "description", d, method, url, d[:200], now)
             return
 
@@ -224,14 +226,15 @@ _FALLBACK_PATHS = (("/about", "about_page_meta"), ("/careers", "careers_page_met
 
 
 def usable_page_description(text) -> str | None:
-    """A company description from a page that is not the company's homepage, or None."""
+    """A company description from a page that is not the company's homepage, or None. English
+    only: the job-copy filter can't judge other languages, and this text is where job copy lives."""
     d = clean_description(text)
     return d if d and is_english(d) and not _JOB_COPY_RE.search(d) else None
 
 
 def _usable_homepage_description(text) -> str | None:
-    d = clean_description(text)
-    return d if d and is_english(d) else None
+    """A company's own meta description or vendor record, in any language."""
+    return clean_description(text)
 
 
 def _missing_descriptions(conn, runs: list[str]) -> list[dict]:
@@ -342,6 +345,93 @@ def recover_descriptions_network(conn, run: str, from_runs: list[str], client: H
 
 
 # ---------------------------------------------------------------------------
+# Ownership evidence
+# ---------------------------------------------------------------------------
+
+MAX_BOARDS_ON_OWNING_SITE = 3
+
+
+def _harvest_tokens(raw_dir: Path, source: str) -> list[list]:
+    path = Path(raw_dir) / source / "batches.jsonl"
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as fh:
+        return [token for line in fh for token in json.loads(line)["tokens"]]
+
+
+def _ownership_links(conn, raw_dir: Path) -> dict[tuple[str, str], tuple[str, str]]:
+    """(ats, code) -> (how it is known, the owner's host). A page linking to many boards is a group,
+    agency or portfolio site and proves nothing about any one of them."""
+    links: dict[tuple[str, str], tuple[str, str]] = {}
+    for ats, code, _, evidence in _harvest_tokens(raw_dir, "dns_cname"):
+        if evidence.startswith("cname:"):
+            links.setdefault((ats, code.casefold()), ("dns_cname", evidence.split(":", 1)[1].split("->")[0]))
+    per_host: dict[str, set] = defaultdict(set)
+    tokens = _harvest_tokens(raw_dir, "company_sites")
+    for ats, code, _, evidence in tokens:
+        per_host[registrable_domain(host_of(evidence))].add((ats, code.casefold()))
+    for ats, code, _, evidence in tokens:
+        host = host_of(evidence)
+        if len(per_host[registrable_domain(host)]) <= MAX_BOARDS_ON_OWNING_SITE:
+            links.setdefault((ats, code.casefold()), ("company_sites", host))
+    for r in conn.execute("SELECT url, final_url, summary FROM pages WHERE status='ok'"):
+        refs = set(json.loads(r["summary"]).get("board_refs") or [])
+        if not refs or len(refs) > MAX_BOARDS_ON_OWNING_SITE:
+            continue
+        host = host_of(r["final_url"] or r["url"])
+        if registrable_domain(host) in ATS_REGISTRABLE_DOMAINS:
+            continue
+        for ref in refs:
+            ats, _, code = ref.partition(":")
+            links.setdefault((ats, code.casefold()), ("stored_pages", host))
+    return links
+
+
+def apply_ownership_evidence(conn, run: str, from_runs: list[str], raw_dir: Path, client: HttpClient, now: str, workers: int = 16, ats_allowed=CORE_ATS) -> dict:
+    """A company's own DNS or site pointing at a board proves whose board it is, which backs up the vendor's name.
+    DNS needs nothing more: only the domain's owner can set it. A linking page must be that company's:
+    its domain names the company, or, for sites from a company list, the page names itself as it."""
+    links = _ownership_links(conn, raw_dir)
+    latest = store.latest_verifications(conn)
+    marks = ",".join("?" * len(from_runs))
+    open_boards = {r["board_id"]: r for r in conn.execute(
+        f"SELECT i.* FROM identities i JOIN (SELECT board_id, MAX(decided_at || '|' || run) AS pick FROM identities WHERE run IN ({marks}) GROUP BY board_id) t"
+        " ON i.board_id=t.board_id AND (i.decided_at || '|' || i.run)=t.pick WHERE i.status IN ('identity_unresolved', 'identity_mismatch')", from_runs)}
+    candidates = []
+    for b in load_boards(conn):
+        prior, v = open_boards.get(b["id"]), latest.get(b["id"])
+        link = links.get((b["ats"], b["code"].casefold()))
+        if not prior or not link or b["ats"] not in ats_allowed or not v or v["outcome"] not in LIVE:
+            continue
+        res = _result(conn, b, v, prior["name"] if prior["basis"] in _VENDOR_BASES else None)
+        claims = name_claims(res, homepage=None)
+        vendor = [c.name for c in claims if c.kind in (VENDOR_API, VENDOR_PAGE)]
+        if vendor:
+            candidates.append((b, v, link, claims, vendor))
+    need_page = sorted({f"https://{c[2][1]}" for c in candidates if c[2][0] == "company_sites" and not any(domain_compatible(c[2][1], n) for n in c[4])})
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        fetched = dict(zip(need_page, ex.map(lambda u: fetch_page(client, u), need_page)))
+    confirmed = Counter()
+    with conn:
+        for b, v, (source, host), claims, vendor in candidates:
+            named_by_domain = any(domain_compatible(host, n) for n in vendor)
+            if source == "stored_pages" and not named_by_domain:
+                continue
+            if source == "company_sites" and not named_by_domain and not homepage_self_naming(fetched.get(f"https://{host}"), vendor):
+                continue
+            ident = resolve_identity(claims, b["code"], board_ownership=True)
+            if ident.status != CONFIRMED:
+                continue
+            _record_identity(conn, run, b["id"], ident, now)
+            _record_evidence(conn, run, b["id"], "name", ident.name, "identity:" + "+".join(ident.basis), v["endpoint"], f"{source}:{host}; {_claims_text(claims)}", now)
+            site = clean_website("https://" + registrable_domain(host))
+            if site and any(domain_compatible(site, n) for n in vendor):
+                _record_evidence(conn, run, b["id"], "website_url", site, f"{source}_links_board+domain_names_company", site, f"links_to_board:{b['ats']}:{b['code']}; {source}:{host}", now)
+            confirmed[source] += 1
+    return {"candidates": len(candidates), "confirmed": dict(sorted(confirmed.items()))}
+
+
+# ---------------------------------------------------------------------------
 # The last check before an export
 # ---------------------------------------------------------------------------
 
@@ -421,7 +511,9 @@ def final_checks(conn, run: str, from_runs: list[str], client: HttpClient, valid
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="company_dataset.repairs")
-    p.add_argument("step", choices=["sr-existence", "reresolve", "reverify-recovery", "descriptions-cached", "descriptions-network", "final-checks"])
+    p.add_argument("step", choices=["sr-existence", "reresolve", "reverify-recovery", "descriptions-cached", "descriptions-network", "final-checks", "ownership"])
+    p.add_argument("--raw", default="data/raw")
+    p.add_argument("--ats", default="", help="ownership: comma-separated ATS, default the five target ATS")
     p.add_argument("--db", required=True)
     p.add_argument("--run", required=True)
     p.add_argument("--from-runs", default="", help="reresolve: comma-separated runs whose newest decision per board is the starting point")
@@ -434,6 +526,9 @@ def main(argv=None) -> int:
         out = backfill_smartrecruiters_existence(conn, a.run, utc_now())
     elif a.step == "reresolve":
         out = reresolve_identities(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
+    elif a.step == "ownership":
+        allowed = tuple(x for x in a.ats.split(",") if x) or CORE_ATS
+        out = apply_ownership_evidence(conn, a.run, [r for r in a.from_runs.split(",") if r], Path(a.raw), HttpClient(timeout=20, per_host_interval=0.1, max_attempts=2), utc_now(), ats_allowed=allowed)
     elif a.step == "final-checks":
         client = HttpClient(timeout=20, per_host_interval=FAST_PER_HOST_INTERVAL if a.fast else 0.5, max_attempts=3)
         limits = resolve_rate_limits(overrides=FAST_RATE_LIMITS) if a.fast else resolve_rate_limits()

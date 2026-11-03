@@ -27,7 +27,7 @@ from company_dataset import store
 from company_dataset.config import FAST_PER_HOST_INTERVAL, FAST_WORKERS
 from company_dataset.description_rules import acceptable
 from company_dataset.enrich import PARKED_RE
-from company_dataset.enrichment import ENGLISH_HEADERS, clean_description, homepage_description, is_english, parse_page
+from company_dataset.enrichment import ENGLISH_HEADERS, clean_description, homepage_description, parse_page
 from company_dataset.export import _latest_identity_per_board, decided_rows
 from company_dataset.http import HttpClient, RequestError
 from company_dataset.identity import _LEGAL_WORDS_FOR_NAMES, _fold, registrable_domain
@@ -178,7 +178,7 @@ def vendor_profile(client: HttpClient, t: Target) -> Found | None:
             detail = _json(client, f"{base}/{quote(str(posting.get('id')), safe='')}") or {}
             section = ((detail.get("jobAd") or {}).get("sections") or {}).get("companyDescription") or {}
             text = clean_description(section.get("text"))
-            if text and is_english(text):
+            if text:
                 return Found(text, "smartrecruiters_company_description", f"{base}/{posting.get('id')}")
         return None
     ads: list[str] = []
@@ -187,7 +187,7 @@ def vendor_profile(client: HttpClient, t: Target) -> Found | None:
         api = "boards-api.eu.greenhouse.io" if t.region == "eu" else "boards-api.greenhouse.io"
         info = _json(client, f"https://{api}/v1/boards/{q}") or {}
         text = clean_description(info.get("content"))
-        if text and is_english(text):
+        if text:
             return Found(text, "greenhouse_board_info", f"https://{api}/v1/boards/{q}")
         if not t.jobs:
             return None
@@ -241,8 +241,6 @@ def cascade(client: HttpClient, t: Target) -> Found | None:
             text = homepage_description(parse_page(html))
             if suffix:
                 text = usable_page_description(text)
-            elif text and not is_english(text):
-                text = None
             method = f"{label}_meta" if suffix else "homepage_meta"
             if text and acceptable(method, text, t.name):
                 return Found(text, method, url)
