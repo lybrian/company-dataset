@@ -25,8 +25,9 @@ VENDOR_PAGE = "vendor_page"
 HOMEPAGE = "homepage"          # a company site reached from the board (or linking to it) that names itself
 SOURCE_LIST = "source_list"    # a third-party discovery list
 STRUCTURED = "structured_profile"  # e.g. Wikidata item whose official website is the verified domain
+AD_COPY = "ad_copy"            # tenant-authored "About" section on the job ad page; company-authored copy on ATS platform
 
-_CLASS = {VENDOR_API: "vendor", VENDOR_PAGE: "vendor", HOMEPAGE: "homepage", SOURCE_LIST: "list", STRUCTURED: "structured"}
+_CLASS = {VENDOR_API: "vendor", VENDOR_PAGE: "vendor", HOMEPAGE: "homepage", SOURCE_LIST: "list", STRUCTURED: "structured", AD_COPY: "ad_copy"}
 
 
 @dataclass
@@ -263,7 +264,7 @@ def strip_entity_code(name: str) -> str:
     return _ENTITY_PREFIX_RE.sub("", name).strip() or name
 # Which agreeing claim to show as the company name: the vendor's board-level name first;
 # homepage titles ("Home ID-ware English") and per-posting legal entities last.
-_DISPLAY_ORDER = {VENDOR_API: 0, VENDOR_PAGE: 1, STRUCTURED: 2, SOURCE_LIST: 3, HOMEPAGE: 5}
+_DISPLAY_ORDER = {VENDOR_API: 0, VENDOR_PAGE: 1, STRUCTURED: 2, SOURCE_LIST: 3, AD_COPY: 4, HOMEPAGE: 5}
 
 
 def display_name(agreeing: list[NameClaim]) -> str:
@@ -312,6 +313,12 @@ def name_claims(res: dict, homepage: dict | None, homepage_independent: bool = F
             claims.append(NameClaim(n, VENDOR_PAGE, basis))
     for source, n in b["names"]:
         claims.append(NameClaim(n, SOURCE_LIST, source))
+    for text, method in (res.get("jobad_about") or []):
+        # The jobad_about text already passed describes_company(text, vendor_company_name),
+        # so the subject corroborates the vendor's company name.
+        vendor_name = v.get("company_name")
+        if vendor_name:
+            claims.append(NameClaim(vendor_name, AD_COPY, method))
     if homepage and homepage_independent:
         for n in brand_segments(homepage):
             claims.append(NameClaim(n, HOMEPAGE, "homepage"))

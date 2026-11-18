@@ -8,11 +8,14 @@ picks a run up by naming it. Each step commits as one transaction.
     python -m company_dataset.repairs reverify-recovery --db data/store.db --run recovery_reverify_2026-11-03 --from-run recovery1
     python -m company_dataset.repairs descriptions-cached --db data/store.db --run desc_cached_2026-11-03 --from-runs fullrun,...
     python -m company_dataset.repairs descriptions-network --db data/store.db --run desc_network_2026-11-03 --from-runs fullrun,...
+    python -m company_dataset.repairs promote-vendor --db data/store.db --run vendor_promote_2026-11-03 --from-runs fullrun,...
+    python -m company_dataset.repairs promote-job-board-orgs --db data/store.db --run org_promote_2026-11-03 --from-runs fullrun,...
     python -m company_dataset.repairs final-checks --db data/store.db --run final_qa_2026-11-03 --from-runs fullrun,...
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 from collections import Counter, defaultdict
@@ -21,18 +24,18 @@ from pathlib import Path
 
 from company_dataset import store
 from company_dataset.enrichment import (
-    board_from_validation, clean_description, english_variant_urls, fetch_page, is_english, landing_site, linkedin_url,
+    board_from_validation, clean_description, clean_name, english_variant_urls, fetch_page, is_auxiliary_board, is_test_board, is_english, landing_site, linkedin_url,
 )
 from company_dataset.http import HttpClient
 from company_dataset.config import FAST_PER_HOST_INTERVAL, FAST_RATE_LIMITS, FAST_WORKERS, resolve_rate_limits
 from company_dataset.enrich import NON_MAIN_LABELS, PARKED_RE, board_ownership, homepage_self_naming, official_landing, verify_homepage, website_supported
-from company_dataset.export import _latest_field_evidence_per_board_field, decided_rows
+from company_dataset.export import _latest_checks, _latest_field_evidence_per_board_field, _latest_identity_per_board, _PLACEHOLDER_RE, decided_rows
 from company_dataset.identity import (
-    CONFIRMED, VENDOR_API, VENDOR_PAGE, careers_branded_domain, domain_compatible, linkedin_compatible, name_claims, registrable_domain, resolve_identity,
+    CONFIRMED, UNRESOLVED, VENDOR_API, VENDOR_PAGE, _code_shaped, careers_branded_domain, domain_compatible, linkedin_compatible, name_claims, registrable_domain, resolve_identity,
 )
 from company_dataset.ingest import load_boards
 from company_dataset.models import Candidate, utc_now
-from company_dataset.normalize import CORE_ATS, SMARTRECRUITERS, canonical_board_url, clean_website, host_of, normalize_linkedin, validation_endpoint
+from company_dataset.normalize import ASHBY, CORE_ATS, LEVER, SMARTRECRUITERS, canonical_board_url, clean_website, host_of, normalize_linkedin, validation_endpoint
 from company_dataset.validate import SR_NO_SUCH_COMPANY, AtsRateLimiter, BoardValidator, smartrecruiters_generic_page
 from company_dataset.verification import INVALID_IDENTIFIER, LIVE, VERIFIED_LIVE_ZERO_JOBS, classify
 
@@ -75,8 +78,14 @@ def _result(conn, b: dict, v, stored_vendor_name: str | None) -> dict:
     name survives only as the name its earlier decision recorded."""
     validation = _validation(v)
     board = board_from_validation(Candidate(ats=b["ats"], codes=b["codes"] or [b["code"]], region=b["region"]), validation)
+    jobad_about = [(row["value"], row["method"]) for row in conn.execute(
+        """SELECT value, method FROM field_evidence
+           WHERE board_id=? AND field='description' AND status='verified' AND value != ''
+           AND method IN ('gh_content_about','lever_jobad_about','ashby_jobad_about','breezy_jobad_about','sr_jobad_about')""",
+        (b["id"],)).fetchall()]
     return {"board": b, "validation": validation, "careersite_url": board.careersite_url, "board_page": store.page(conn, board.careersite_url),
-            "board_extract": {"names": [(stored_vendor_name, "stored_identity_name")]} if stored_vendor_name else None}
+            "board_extract": {"names": [(stored_vendor_name, "stored_identity_name")]} if stored_vendor_name else None,
+            "jobad_about": jobad_about}
 
 
 def _claims_text(claims) -> str:
@@ -212,6 +221,155 @@ def _carry_linkedin(conn, run, board_id, from_run, name, website, page, now, sit
         if clean and linkedin_compatible(clean.rsplit("/", 1)[-1], name, website):
             _record_evidence(conn, run, board_id, "linkedin_url", clean, method, site, "", now)
             return
+
+
+# ---------------------------------------------------------------------------
+# Vendor-name promotion (Option 1) and job-board org extraction (Option 3)
+#
+# A live board is delivered when its vendor-recorded name and four mandatory
+# fields are present, with no external URLs required. These steps find the
+# vendor's own name for boards whose latest decision is unresolved.
+# ---------------------------------------------------------------------------
+
+# SmartRecruiters' title tag, Greenhouse's board name, the Breezy account header
+# and Lever hosted-page titles are vendor self-reports. Job-board app payloads
+# name the organization the vendor serves the job ads for.
+_PROMO_VENDOR_BASES = _VENDOR_BASES
+_PROMO_JUNK_RE = re.compile(r"\b(test|testing|demo|sandbox|staging|sample|specimen|example)\b", re.I)
+_DEFAULT_SAMPLE_SIZE = 100
+
+
+def _vendor_promotion_candidates(conn, from_runs: list[str]) -> dict[int, dict]:
+    """Unresolved live boards with the newest vendor-asserted name available: the
+    stored identity name when that decision itself rested on the vendor's record,
+    else the company name the newest live provider check returned."""
+    idents = _latest_identity_per_board(conn, from_runs, CORE_ATS)
+    checks = _latest_checks(conn, from_runs)
+    out: dict[int, dict] = {}
+    for bid in sorted(idents):
+        ident = idents[bid]
+        if ident["status"] != UNRESOLVED:
+            continue
+        v = checks.get(bid)
+        if not v or v["outcome"] not in LIVE:
+            continue
+        name, detail = None, None
+        if (ident["basis"] or "") in _PROMO_VENDOR_BASES and ident["name"]:
+            name, detail = ident["name"], f"identity:{ident['basis']}"
+        elif v["provider_name"]:
+            name, detail = v["provider_name"], "provider_name"
+        out[bid] = {"name": name, "detail": detail, "ident": ident, "check": v}
+    return out
+
+
+def _promo_name_failure(raw_name, code: str, *, page_derived: bool) -> str:
+    """Why a candidate name cannot be promoted ('' when it can)."""
+    n = clean_name(raw_name, code)
+    if not n:
+        return "not_a_name"
+    if _PROMO_JUNK_RE.search(n) or is_test_board(n, code):
+        return "test_board"
+    if is_auxiliary_board(n):
+        return "auxiliary_board"
+    if _PLACEHOLDER_RE.search(n):
+        return "placeholder_name"
+    # A hosted page that says no more than its slug names nothing ("samsproduct" for samsproduct).
+    if page_derived and _code_shaped(n, re.sub(r"[^a-z0-9]", "", (code or "").lower())):
+        return "not_a_name"
+    return ""
+
+
+def _record_promotion(conn, run: str, bid: int, name: str, detail: str, v, now: str) -> None:
+    conn.execute("INSERT OR REPLACE INTO identities(board_id, run, status, name, basis, conflicts, decided_at) VALUES (?,?,?,?,?,'',?)",
+                 (bid, run, CONFIRMED, name, f"vendor_promoted:{detail}", now))
+    conn.execute("INSERT OR IGNORE INTO field_evidence(board_id, field, value, method, evidence_url, evidence_text, status, observed_at, run)"
+                 " VALUES (?,'name',?,?,?,?, 'verified',?,?)", (bid, name, f"vendor_promoted:{detail}", v["endpoint"], name[:200], now, run))
+
+
+def promote_vendor_identities(conn, run: str, from_runs: list[str], now: str, sample_out: str | None = None, sample_size: int = _DEFAULT_SAMPLE_SIZE) -> dict:
+    """Option 1: unresolved live boards whose vendor record names them get a confirmed
+    identity from that name. Boards a third-party list contradicts (identity_mismatch)
+    are left standing, as are boards not live. Returns counts and an optional QA sample."""
+    candidates = _vendor_promotion_candidates(conn, from_runs)
+    stats, promoted = Counter(), []
+    by_ats = Counter()
+    by_source = Counter()
+    with conn:
+        for bid, c in candidates.items():
+            if not c["name"]:
+                stats["no_vendor_name"] += 1
+                continue
+            reason = _promo_name_failure(c["name"], c["ident"]["code"], page_derived=False)
+            if reason:
+                stats[reason] += 1
+                continue
+            code, n = c["ident"]["code"], clean_name(c["name"], c["ident"]["code"])
+            _record_promotion(conn, run, bid, n, c["detail"], c["check"], now)
+            promoted.append({"board_id": bid, "ats_system": c["ident"]["ats"], "ats_code": code, "company_name": n,
+                             "prior_basis": c["ident"]["basis"] or "", "name_source": c["detail"],
+                             "jobs_count": "" if c["check"]["jobs_count"] is None else c["check"]["jobs_count"],
+                             "region": c["ident"]["region"] or "",
+                             "board_url": canonical_board_url(c["ident"]["ats"], code, c["ident"]["region"] or None)})
+            by_ats[c["ident"]["ats"]] += 1
+            by_source[c["detail"]] += 1
+    if sample_out and promoted:
+        rows = sorted(promoted, key=lambda r: (r["ats_system"], r["ats_code"].casefold()))
+        size = max(1, int(sample_size or _DEFAULT_SAMPLE_SIZE))
+        if len(rows) > size:
+            step = (len(rows) - 1) / (size - 1)
+            rows = [rows[round(i * step)] for i in range(size)]
+        path = Path(sample_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0]), extrasaction="ignore", lineterminator="\n")
+            w.writeheader()
+            w.writerows(rows)
+    return {"considered": len(candidates), "promoted": len(promoted), "by_ats": dict(sorted(by_ats.items())),
+            "by_source": dict(sorted(by_source.items())), "skipped": dict(sorted(stats.items())), "sample": len(rows) if sample_out and promoted else 0}
+
+
+def _job_board_page_identity(ats: str, page: dict | None) -> tuple[str | None, str | None]:
+    """The organization the vendor names inside its own hosted job board: Ashby's window.__appData
+    payload carries an organization record; Lever's hosted page title leads with the account."""
+    if not page or page.get("status") != "ok":
+        return None, None
+    if ats == ASHBY:
+        org = page.get("ashby_org") or {}
+        return org.get("name"), "ashby_appdata_organization"
+    return page.get("title"), "hosted_board_title"
+
+
+def promote_job_board_orgs(conn, run: str, from_runs: list[str], now: str, ats_allowed: tuple[str, ...] = (LEVER, ASHBY)) -> dict:
+    """Option 3: Lever and Ashby boards with open roles but no vendor-asserted name of their
+    own read the vendor's job-board metadata from stored hosted pages. Only pages already
+    cached are read; nothing is fetched for this."""
+    candidates = _vendor_promotion_candidates(conn, from_runs)
+    stats, by_ats = Counter(), Counter()
+    option1 = 0
+    with conn:
+        for bid, c in candidates.items():
+            ats = c["ident"]["ats"]
+            if ats not in ats_allowed:
+                continue
+            if int(c["check"]["jobs_count"] or 0) <= 0:
+                stats["no_open_jobs"] += 1
+                continue
+            if c["name"] and _promo_name_failure(c["name"], c["ident"]["code"], page_derived=False) == "":
+                option1 += 1
+                continue
+            raw, detail = _job_board_page_identity(ats, store.page(conn, canonical_board_url(ats, c["ident"]["code"], c["ident"]["region"] or None)))
+            if not raw:
+                stats["no_page_identity"] += 1
+                continue
+            reason = _promo_name_failure(raw, c["ident"]["code"], page_derived=True)
+            if reason:
+                stats[reason] += 1
+                continue
+            n = clean_name(raw, c["ident"]["code"])
+            _record_promotion(conn, run, bid, n, detail, c["check"], now)
+            by_ats[ats] += 1
+    return {"considered": len(candidates), "already_vendor_named": option1, "promoted": sum(by_ats.values()),
+            "by_ats": dict(sorted(by_ats.items())), "skipped": dict(sorted(stats.items()))}
 
 
 # ---------------------------------------------------------------------------
@@ -511,32 +669,42 @@ def final_checks(conn, run: str, from_runs: list[str], client: HttpClient, valid
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="company_dataset.repairs")
-    p.add_argument("step", choices=["sr-existence", "reresolve", "reverify-recovery", "descriptions-cached", "descriptions-network", "final-checks", "ownership"])
+    p.add_argument("step", choices=["sr-existence", "reresolve", "reverify-recovery", "descriptions-cached", "descriptions-network", "final-checks", "ownership",
+                                    "promote-vendor", "promote-job-board-orgs"])
     p.add_argument("--raw", default="data/raw")
     p.add_argument("--ats", default="", help="ownership: comma-separated ATS, default the five target ATS")
+    p.add_argument("--ats-allowed", default="", help="job-board orgs: comma-separated ATS, default lever,ashby")
     p.add_argument("--db", required=True)
     p.add_argument("--run", required=True)
-    p.add_argument("--from-runs", default="", help="reresolve: comma-separated runs whose newest decision per board is the starting point")
+    p.add_argument("--from-runs", default="", help="newest decision per board is taken across these runs")
     p.add_argument("--from-run", default="recovery1", help="reverify-recovery: the run whose websites are checked")
     p.add_argument("--fast", action="store_true", help="final-checks: higher concurrency and request rates")
     p.add_argument("--refetch", action="store_true", help="reverify-recovery: fetch every site again instead of using stored pages")
+    p.add_argument("--sample-out", default="", help="promote-vendor: write a QA sample CSV here")
+    p.add_argument("--sample-size", type=int, default=_DEFAULT_SAMPLE_SIZE, help="promote-vendor: sample rows, default 100")
     a = p.parse_args(argv)
     conn = store.connect(a.db)
+    from_runs = [r for r in a.from_runs.split(",") if r]
     if a.step == "sr-existence":
         out = backfill_smartrecruiters_existence(conn, a.run, utc_now())
     elif a.step == "reresolve":
-        out = reresolve_identities(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
+        out = reresolve_identities(conn, a.run, from_runs, utc_now())
     elif a.step == "ownership":
         allowed = tuple(x for x in a.ats.split(",") if x) or CORE_ATS
-        out = apply_ownership_evidence(conn, a.run, [r for r in a.from_runs.split(",") if r], Path(a.raw), HttpClient(timeout=20, per_host_interval=0.1, max_attempts=2), utc_now(), ats_allowed=allowed)
+        out = apply_ownership_evidence(conn, a.run, from_runs, Path(a.raw), HttpClient(timeout=20, per_host_interval=0.1, max_attempts=2), utc_now(), ats_allowed=allowed)
     elif a.step == "final-checks":
         client = HttpClient(timeout=20, per_host_interval=FAST_PER_HOST_INTERVAL if a.fast else 0.5, max_attempts=3)
         limits = resolve_rate_limits(overrides=FAST_RATE_LIMITS) if a.fast else resolve_rate_limits()
-        out = final_checks(conn, a.run, [r for r in a.from_runs.split(",") if r], client, BoardValidator(client, rate_limiter=AtsRateLimiter(limits)), utc_now(), workers=FAST_WORKERS if a.fast else 16)
+        out = final_checks(conn, a.run, from_runs, client, BoardValidator(client, rate_limiter=AtsRateLimiter(limits)), utc_now(), workers=FAST_WORKERS if a.fast else 16)
     elif a.step == "descriptions-cached":
-        out = recover_descriptions_cached(conn, a.run, [r for r in a.from_runs.split(",") if r], utc_now())
+        out = recover_descriptions_cached(conn, a.run, from_runs, utc_now())
     elif a.step == "descriptions-network":
-        out = recover_descriptions_network(conn, a.run, [r for r in a.from_runs.split(",") if r], HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2), utc_now())
+        out = recover_descriptions_network(conn, a.run, from_runs, HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2), utc_now())
+    elif a.step == "promote-vendor":
+        out = promote_vendor_identities(conn, a.run, from_runs, utc_now(), sample_out=a.sample_out or None, sample_size=a.sample_size)
+    elif a.step == "promote-job-board-orgs":
+        allowed = tuple(x for x in a.ats_allowed.split(",") if x) or (LEVER, ASHBY)
+        out = promote_job_board_orgs(conn, a.run, from_runs, utc_now(), ats_allowed=allowed)
     else:
         out = reverify_recovery(conn, a.run, a.from_run, HttpClient(timeout=20, per_host_interval=0.5, max_attempts=2), utc_now(), refetch=a.refetch)
     print(json.dumps(out, indent=1))

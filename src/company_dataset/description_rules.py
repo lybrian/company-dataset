@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import re
 
-from company_dataset.identity import _LEGAL_WORDS_FOR_NAMES, _fold
+from company_dataset.identity import _LEGAL_WORDS_FOR_NAMES, _fold, names_compatible
 
 NEVER_USED_METHODS = frozenset(("careers_page_paragraph", "careers_page_meta", "board_page_meta"))
-SUBJECT_METHODS = frozenset(("homepage_paragraph", "about_page_paragraph", "board_page_paragraph", "about_page_meta"))
+SUBJECT_METHODS = frozenset(("homepage_paragraph", "about_page_paragraph", "board_page_paragraph", "about_page_meta",
+                              "job_ad_about_section_deep", "lever_jobad_about", "gh_content_about",
+                              "ashby_jobad_about", "breezy_jobad_about", "sr_jobad_about"))
 _LEGAL_ENDINGS = _LEGAL_WORDS_FOR_NAMES - {"the", "and", "of"}
 _VERB = (r"(is|are|was|were|provides?|offers?|builds?|develops?|creates?|designs?|manufactures?|delivers?|specializes?|specialises?|serves?|helps?|enables?"
          r"|empowers?|connects?|operates?|partners?|exists?|makes?|leverages?|invests?)")
@@ -69,10 +71,69 @@ def _about_account_holder(text: str, name: str) -> bool:
     return re.search(rf"\b{re.escape(tokens[0])}\b", _fold(text or "").lower()) is not None
 
 
+def _extract_subject(text: str) -> str | None:
+    """Extract the subject (company name) from the first sentence of a description."""
+    if not text:
+        return None
+    sentence = text.strip().split(". ")[0].split("! ")[0].split("? ")[0]
+    # Take words before the first verb-like word
+    words = sentence.split()
+    for i, w in enumerate(words):
+        wl = w.lower().rstrip(".,;:!?")
+        if wl in ("is", "are", "was", "were", "provides", "offers", "builds", "develops", "creates",
+                    "designs", "manufactures", "delivers", "specializes", "specialises", "serves",
+                    "helps", "enables", "empowers", "connects", "operates", "partners", "exists",
+                    "makes", "leverages", "invests", "focuses", "leads", "drives", "transforms"):
+            return " ".join(words[:i])
+    return " ".join(words[:5])  # fallback: first 5 words
+
+
+def _alias_compatible(alias: str, name: str) -> bool:
+    """Check if alias is a valid expansion of name (e.g., '2A Consulting' for '2A')."""
+    if not alias or not name:
+        return False
+    alias_tok = [t.lower() for t in re.findall(r"[A-Za-z0-9]+", alias)]
+    name_tok = [t.lower() for t in re.findall(r"[A-Za-z0-9]+", name)]
+    if not name_tok or not alias_tok:
+        return False
+    if not alias_tok[0].startswith(name_tok[0]):
+        return False
+    return all(t in alias_tok for t in name_tok)
+
+
+def _is_job_ad_boilerplate(text: str) -> bool:
+    """Check if text is job-ad boilerplate (requirements, responsibilities, etc.) rather than company description."""
+    if not text:
+        return True
+    t = text.lower()
+    boilerplate_patterns = [
+        r"\b(responsibilities|requirements|qualifications|duties|what you['\u2019]?ll do|what we['\u2019]?re looking for|you will|you['\u2019]?ll be)\b",
+        r"\b(years of experience|degree in|bachelor|master|phd|certification|proficient in|experience with)\b",
+        r"\b(salary|compensation|benefits|bonus|stock options|equity|401k|health insurance)\b",
+        r"\b(apply now|apply here|click to apply|send resume|submit application)\b",
+    ]
+    for pat in boilerplate_patterns:
+        if re.search(pat, t):
+            return True
+    return False
+
+
 def acceptable(method: str, text: str, name: str) -> bool:
     if method in NEVER_USED_METHODS:
         return False
     if method in SUBJECT_METHODS:
+        if method.startswith(("lever_", "gh_", "ashby_", "breezy_", "sr_")) and method.endswith("_about"):
+            # AD_COPY methods: extract subject from text and check alias compatibility
+            subject = _extract_subject(text)
+            if subject and _alias_compatible(subject, name):
+                return True
+            # Special handling for SR: the st-companyDescription section is explicitly about the company
+            # even if the company name isn't in the first sentence. Accept if substantial and not boilerplate.
+            if method == "sr_jobad_about":
+                if text and len(text.strip()) > 50 and not _is_job_ad_boilerplate(text):
+                    return True
+            # Fall back to describes_company for cases where alias check fails but text still describes the company
+            return describes_company(text, name)
         return describes_company(text, name)
     if method == "smartrecruiters_company_description":
         return _about_account_holder(text, name)

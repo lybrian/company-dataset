@@ -1,5 +1,0 @@
-{"t": "2026-10-31T17:23:08Z", "event": "sample", "size": 45, "by_ats": {"ashby": 3, "bamboohr": 3, "breezy": 3, "greenhouse": 3, "icims": 3, "join": 3, "lever": 3, "personio": 3, "pinpoint": 3, "recruitee": 3, "rippling": 3, "smartrecruiters": 3, "teamtailor": 3, "workable": 3, "workday": 3}}
-{"t": "2026-10-31T17:23:18Z", "event": "stage1_done", "outcomes": {"dead_removed": 13, "verified_live": 26, "verified_live_zero_jobs": 5, "inconclusive": 1}}
-{"t": "2026-10-31T17:24:36Z", "event": "reference_1", "domains": 21, "names": 35, "matched_domains": 70, "matched_names": 26}
-{"t": "2026-10-31T17:25:41Z", "event": "homepages", "fetched": 34, "ok": 32}
-{"t": "2026-10-31T17:27:02Z", "event": "done", "boards": 45, "complete_strict": 13, "complete_lenient": 13}

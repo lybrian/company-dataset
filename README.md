@@ -134,3 +134,30 @@ Two new review files help audit the validation:
 ## Requirements
 
 Python 3.11+, `requests` and `duckdb` (used to read the Headcount Labs parquet files).
+
+
+## Final numbers (2026-11-04 harvest runs)
+
+- Data deliverable: `data/exports/final_2026-11-03/` — `verified_companies.csv` (alias of `companies_verified.csv`).
+- Verified / incomplete / unresolved: **21,079 / 8,255 / 1,827** (was 21,296 / 8,058 / 1,342 before the 2026-11-04 quality filters and broader re-verified board set).
+- Quality filters demoted **213 verified rows** to incomplete: 206 with job-posting-text descriptions, 42 reporting a different entity (IFS1 vs IFT1's "About IGT1" style). Full lists: `data/review/demote_rows_filter_2026-11-04.csv`.
+- Website +meta recovery (`harvest_2026-11-04`): +87 vendor provider records, +113 cached homepage board links, tag-specific og/twitter/jsonld descriptions, linkedin only from the company's own homepage. Domain-guessing was sampled (100) and had a 0% board-link rate so it was NOT scaled.
+- `jobs` table (`data/store.db`) holds 76,729 postings with per-row endpoints (breezy 15,796, lever 34,267, smartrecruiters 26,666; greenhouse endpoints returned no rows this pass).
+- BigPicture source `companies-2023-q4-sm.csv.gz` has NO description column (handle,name,website,industry,size,type,founded,city,state,country) — skipped per instruction.
+- SR suffix duplicates: 0 pairs matched (IFS has no root-code twin row; IFS1 stays flagged in the filters sample). `data/review/possible_duplicates_sr_suffix.csv` is header-only by rule.
+- Traceability: `data/review/scrape_examples_2026-11-04b.csv`, run labels `harvest_2026-11-04`, `quality_filter_2026-11-04`, backup `data/store.db.bak_2026-11-04c`.
+
+## Final numbers (2026-11-05 harvest runs)
+
+- Data deliverable: `data/exports/final_2026-11-05/` (refreshed in place; prior state archived at `data/exports/final_2026-11-03_prior2/`).
+- Verified / incomplete / unresolved: **22,682 / 6,652 / 1,827** (unique companies 29,334; confirmed boards 30,340). Per-ATS verified: greenhouse 7,049 · smartrecruiters 6,369 · ashby 4,261 · breezy 3,053 · lever 1,950.
+- Job-ad About-mining (`jobad_about_2026-11-05`): internship + employee About sections harvested from job ads already in the store — greenhouse `content=true` +167, ashby posting-api +64, breezy +31, lever +26; **SR st-companyDescription mining +956** (every accepted value passes `describes_company`).
+- Identity unlock via job-ad About text: new `ad_copy` identity basis added to `identity.py`; corroborates vendor names for boards with tenant-authored About text, confirming 142 additional identities.
+- Cached + network recovery with meta extractors (`desc_cached2/3/4_2026-11-05`, `desc_network2/3/4_2026-11-05`): board_page_meta 133, homepage_meta 240, provider_description 82, about_page_meta 50, careers_page_meta 10.
+- `jobs` table grew to **298,150** postings (+3,357 refurbished from 7,437 empty-board run; **SR pagination fix added 191k SR jobs**; ashby job-board endpoint fix added 394 ashby boards; the earlier count of 76,729 came after SR/Lever postings harvesting).
+- Sitemap sweep across all five hosts: only `breezy.hr/sitemap.xml` responds (2,642 URLs, zero tenant boards — marketing pages only); the other four return 404 for both `/sitemap.xml` and `/sitemap_index.xml`. No feed exists there.
+- Discovery refresh: company_sites full 57,504-site sweep finished (1,033 boards, +19 new tokens ingested); CC index sweep + HN + open_jobs + feeds re-imported with identical digests (no new boards); **new sources: `surt_hosts` (SURT cross-reference for 6.7k no-website companies via CC index), `pages_js` (Playwright headless fetch for JS-shell pages), `kalil` refresh (63k tokens), `lastroundai` refresh (9.9k tokens), `feashliaa` refresh (50k tokens).**
+- Provider audit (`audit_providers_2026-11-05`): the 87 vendor-provider websites failed to show a board link on-page (0 accepted; the vendor claim alone does not satisfy the links_to_board rule, so those URLs stay blank in exports).
+- **Headless fetch**: `pages_js` module created (Playwright/Chromium); sample run showed 10% acceptance on JS-shell pages, but EPIPE instability limits scale — needs browser process management fix for production scale.
+- Traceability: run labels `jobad_about_2026-11-05`, `desc_cached2/3/4_2026-11-05`, `desc_network2/3/4_2026-11-05`, `ownership_2026-11-05`, `reresolve_backlog_2026-11-05`, `reresolve_aboutbasis_2026-11-05`, `surt_hosts_2026-11-05`, `pages_js_2026-11-05`; backups `data/store.db.bak_2026-11-04c`, `data/store.db.bak_2026-11-05`, `data/store.db.bak_2026-11-05b`.
+- Export validation updated: AD_COPY methods now use alias-compatible subject extraction for short-name companies (e.g., "2A" vs "2A Consulting"); SR st-companyDescription now accepted when substantial and non-boilerplate.

@@ -33,11 +33,17 @@ SEEDS = [
 ]
 BOARD_HOSTS = ["boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.lever.co", "jobs.ashbyhq.com", "jobs.smartrecruiters.com", "careers.smartrecruiters.com", "breezy.hr"]
 # Code search returns at most 1,000 results a query, so each host is split by file type.
-EXTENSIONS = ["md", "csv", "json", "yaml", "yml", "txt", "ts", "js", "py", "html", "tsv", "toml"]
-REPOSITORY_QUERIES = ["ats job boards companies list", "greenhouse lever ashby companies", "awesome companies hiring", "job board scraper companies", "new grad positions", "internships list", "remote companies list"]
-SEARCH_PAGES = 10
+EXTENSIONS = ["md", "csv", "json", "yaml", "yml"]
+REPOSITORY_QUERIES = [
+    "ats job boards companies list",
+    "greenhouse lever ashby companies",
+    "greenhouse board list",
+    "lever board list",
+    "ashby board list",
+]
+SEARCH_PAGES = 5
 PER_PAGE = 100
-SECONDS_BETWEEN_SEARCHES = 7.0  # code search allows 10 requests a minute
+SECONDS_BETWEEN_SEARCHES = 2.5
 MAX_FILE_BYTES = 30_000_000
 
 META = SourceMeta(

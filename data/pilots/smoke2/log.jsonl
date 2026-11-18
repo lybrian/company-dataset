@@ -1,5 +1,0 @@
-{"t": "2026-10-31T17:29:06Z", "event": "sample", "size": 24, "by_ats": {"icims": 8, "personio": 8, "workday": 8}}
-{"t": "2026-10-31T17:29:31Z", "event": "stage1_done", "outcomes": {"dead_removed": 10, "verified_live": 13, "blocked_by_security": 1}}
-{"t": "2026-10-31T17:30:50Z", "event": "reference_1", "domains": 5, "names": 23, "matched_domains": 38, "matched_names": 13}
-{"t": "2026-10-31T17:31:00Z", "event": "homepages", "fetched": 10, "ok": 8}
-{"t": "2026-10-31T17:32:23Z", "event": "done", "boards": 24, "complete_strict": 5, "complete_lenient": 5}

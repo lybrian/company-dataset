@@ -1,3 +1,4 @@
+import csv
 import json
 
 import pytest
@@ -347,3 +348,111 @@ def test_final_checks_skip_rows_that_cannot_be_verified_anyway(conn):
     stats, client = run_fresh(conn, {})
     assert stats["boards"] == 0
     assert no_description not in store.latest_verifications(conn) or client.session.calls == []
+
+
+def named(conn, ats, code, name, basis, jobs=3, outcome="verified_live", provider=None, run="fullrun"):
+    return board(conn, ats, code, outcome=outcome, jobs=jobs, provider=provider, identity=UNRESOLVED, name=name, basis=basis, run=run)
+
+
+def promotion(conn, bid, run):
+    return conn.execute("SELECT status, name, basis FROM identities WHERE board_id=? AND run=?", (bid, run)).fetchone()
+
+
+def test_promote_vendor_confirms_live_vendor_named_boards(conn):
+    live = named(conn, "greenhouse", "hubspotjobs", "HubSpot", "vendor_only")
+    fallback = board(conn, "greenhouse", "insuffico", provider="Insuffico", identity=UNRESOLVED, name=None, basis="insufficient_independent_evidence")
+    dead = named(conn, "greenhouse", "goneco", "Gone Co", "vendor_only", outcome="dead_removed", jobs=None)
+    mismatch = named(conn, "greenhouse", "clashco", "Clash Co", "vendor_only", provider=None)  # a list contradicts, stay out
+    conn.execute("UPDATE identities SET status='identity_mismatch' WHERE board_id=?", (mismatch,))
+    untouched = board(conn, "lever", "listonlyco", identity=UNRESOLVED, name="List Only Co", basis="insufficient_independent_evidence")
+    alread = board(conn, "smartrecruiters", "acmesr", identity=CONFIRMED, name="Acme SR", basis="vendor+list")
+
+    stats = repairs.promote_vendor_identities(conn, "promo", ["fullrun"], "2026-11-03T00:00:00Z")
+
+    assert stats["promoted"] == 2
+    assert stats["by_ats"] == {"greenhouse": 2}
+    assert stats["by_source"] == {"identity:vendor_only": 1, "provider_name": 1}
+    assert (promotion(conn, live, "promo")["status"], promotion(conn, live, "promo")["name"]) == (CONFIRMED, "HubSpot")
+    assert promotion(conn, fallback, "promo")["name"] == "Insuffico"
+    assert promotion(conn, fallback, "promo")["basis"] == "vendor_promoted:provider_name"
+    name = conn.execute("SELECT value, status, run FROM field_evidence WHERE board_id=? AND field='name'", (fallback,)).fetchone()
+    assert name and name["status"] == "verified" and name["run"] == "promo"
+    for bid in (dead, mismatch, untouched, alread):
+        assert promotion(conn, bid, "promo") is None
+    # Re-running with its own run as the source sees nothing open.
+    assert repairs.promote_vendor_identities(conn, "promo2", ["promo"], "2026-11-03T00:05:00Z")["promoted"] == 0
+
+
+def test_promote_vendor_skips_test_and_auxiliary_board_names(conn):
+    testy = board(conn, "lever", "levertest", identity=UNRESOLVED, name="Lever Test 12345", basis="vendor_only")
+    sandboxy = named(conn, "greenhouse", "democo", "Demo Sandbox", "vendor_only")
+    aux = named(conn, "greenhouse", "talentco", "Talent Pool", "vendor_only")
+    coming = named(conn, "greenhouse", "comingco", "Coming Soon Corp", "vendor_only")
+    already = named(conn, "greenhouse", "goodco", "Good Co", "vendor_only")
+
+    stats = repairs.promote_vendor_identities(conn, "promo", ["fullrun"], "2026-11-03T00:00:00Z")
+
+    assert stats["promoted"] == 1
+    assert stats["by_ats"] == {"greenhouse": 1}
+    assert set(stats["skipped"]) == {"not_a_name", "test_board", "auxiliary_board", "placeholder_name"}
+    for bid in (testy, sandboxy, aux, coming):
+        assert promotion(conn, bid, "promo") is None
+    assert (promotion(conn, already, "promo")["status"], promotion(conn, already, "promo")["name"]) == (CONFIRMED, "Good Co")
+
+
+def test_promote_vendor_writes_an_even_sample_csv(conn, tmp_path):
+    for i in range(5):
+        named(conn, "ashby", f"code{i}", f"Co {i}", "vendor_only")
+    out = tmp_path / "sample.csv"
+    stats = repairs.promote_vendor_identities(conn, "promo", ["fullrun"], "2026-11-03T00:00:00Z", sample_out=out, sample_size=3)
+
+    assert stats["promoted"] == 5
+    rows = [r for r in csv.DictReader(open(out))]
+    assert [r["ats_code"] for r in rows] == ["code0", "code2", "code4"]
+    assert rows[0]["company_name"] == "Co 0"
+
+
+def test_job_board_orgs_promotes_lever_and_ashby_boards_with_rented_job_boards(conn):
+    ashby = board(conn, "ashby", "arenaio", identity=UNRESOLVED, name=None, basis="insufficient_independent_evidence", jobs=4)
+    page(conn, "https://jobs.ashbyhq.com/arenaio", title="Jobs", ashby_org={"name": "Arena AI", "website": "https://arena.ai"})
+    lever = board(conn, "lever", "acentarios", identity=UNRESOLVED, name=None, basis="insufficient_independent_evidence", jobs=2)
+    page(conn, "https://jobs.lever.co/acentarios", title="Acntorios")
+    no_jobs = board(conn, "ashby", "quietorg", identity=UNRESOLVED, name=None, basis="insufficient_independent_evidence", jobs=0)
+    page(conn, "https://jobs.ashbyhq.com/quietorg", title="Jobs", ashby_org={"name": "Quiet Org"})
+    vendor_named = named(conn, "ashby", "bestco", "Best Co", "vendor_only", jobs=7)
+
+    stats = repairs.promote_job_board_orgs(conn, "orgpromo", ["fullrun"], "2026-11-03T00:00:00Z")
+
+    assert stats["promoted"] == 2
+    assert stats["by_ats"] == {"ashby": 1, "lever": 1}
+    assert promotion(conn, ashby, "orgpromo")["name"] == "Arena AI"
+    assert promotion(conn, ashby, "orgpromo")["basis"] == "vendor_promoted:ashby_appdata_organization"
+    assert promotion(conn, lever, "orgpromo")["name"] == "Acntorios"
+    assert promotion(conn, no_jobs, "orgpromo") is None
+    assert promotion(conn, vendor_named, "orgpromo") is None
+
+
+def test_job_board_orgs_skip_unusable_page_identities(conn):
+    page(conn, "https://jobs.ashbyhq.com/badorg", title="Jobs", ashby_org={"name": "Staging Sandbox Account"})
+    bad = board(conn, "ashby", "badorg", identity=UNRESOLVED, name=None, basis="insufficient_independent_evidence", jobs=3)
+    page(conn, "https://jobs.ashbyhq.com/nopage")
+    nopage = board(conn, "ashby", "nopage", identity=UNRESOLVED, name=None, basis="insufficient_independent_evidence", jobs=3)
+    slugname = board(conn, "lever", "samsproduct", identity=UNRESOLVED, name=None, basis="insufficient_independent_evidence", jobs=1)
+    page(conn, "https://jobs.lever.co/samsproduct", title="samsproduct")
+
+    stats = repairs.promote_job_board_orgs(conn, "orgpromo", ["fullrun"], "2026-11-03T00:00:00Z")
+
+    assert stats["promoted"] == 0
+    assert set(stats["skipped"]) == {"test_board", "no_page_identity", "not_a_name"}
+    for bid in (bad, nopage, slugname):
+        assert promotion(conn, bid, "orgpromo") is None
+
+
+def test_promoted_board_recovery_description_from_vendor_record(conn):
+    bid = named(conn, "greenhouse", "mandco", "Mand Co", "vendor_only", provider="Mand Co")
+    conn.execute("INSERT INTO verifications(board_id, checked_at, origin, endpoint, outcome, legacy_status, jobs_count, code_validated, provider_name, provider_description)"
+                 " VALUES (?,?,?,?,?,?,?,?,?,?)", (bid, "2026-11-02T00:00:00Z", "fullrun", f"https://api/{bid}", "verified_live", "valid", 1, "mandco", "Mand Co", GOOD))
+    repairs.promote_vendor_identities(conn, "promo", ["fullrun"], "2026-11-03T00:00:00Z")
+    stats = repairs.recover_descriptions_cached(conn, "desc", ["fullrun", "promo"], "2026-11-03T00:10:00Z")
+    assert stats["recovered"] == {"provider_description": 1}
+    assert description_of(conn, bid, "desc")["method"] == "provider_description"

@@ -23,12 +23,16 @@ from company_dataset.platforms import WORKABLE
 from company_dataset.sources._harvest import boards_in_text, parse_tokens, plausible_slug, write_tokens
 from company_dataset.sources.github_lists import MAX_FILE_BYTES, PER_PAGE, SECONDS_BETWEEN_SEARCHES, _gh, raw_url
 
-QUERIES = ["filename:slugs.json greenhouse", "filename:slugs.json lever", "filename:slugs.json ashby", "filename:seed_slugs.json", "filename:company_slugs.json", "filename:known_slugs",
-           "filename:vetted_slugs", "filename:harvested_slugs", "filename:companies_greenhouse", "filename:companies_ashby", "filename:companies_lever", "filename:greenhouse_slugs",
-           "filename:ashby_slugs", "filename:lever_slugs", "filename:smartrecruiters_slugs", "filename:breezy_slugs", "filename:greenhouse_boards", "filename:lever_boards", "filename:ashby_boards",
-           "filename:board_tokens", "filename:ats_companies", "filename:boards.json greenhouse ashby", "filename:companies.yaml greenhouse lever ashby", "filename:companies.yml greenhouse lever",
-           "filename:companies.json greenhouse lever ashby", "filename:companies.csv greenhouse lever", "filename:targets.json greenhouse lever", "filename:sources.json greenhouse lever ashby"]
-PAGES_PER_QUERY = 10  # GitHub's code search stops at 1,000 results, which is 10 pages
+QUERIES = [
+    "filename:slugs.json greenhouse", "filename:slugs.json lever", "filename:slugs.json ashby", "filename:seed_slugs.json", "filename:company_slugs.json", "filename:known_slugs",
+    "filename:vetted_slugs", "filename:harvested_slugs", "filename:companies_greenhouse", "filename:companies_ashby", "filename:companies_lever", "filename:greenhouse_slugs",
+    "filename:ashby_slugs", "filename:lever_slugs", "filename:smartrecruiters_slugs", "filename:breezy_slugs", "filename:greenhouse_boards", "filename:lever_boards", "filename:ashby_boards",
+    "filename:board_tokens", "filename:ats_companies", "filename:boards.json greenhouse ashby", "filename:companies.yaml greenhouse lever ashby", "filename:companies.yml greenhouse lever",
+    "filename:companies.json greenhouse lever ashby", "filename:companies.csv greenhouse lever", "filename:targets.json greenhouse lever", "filename:sources.json greenhouse lever ashby",
+    "greenhouse slugs filetype:json", "lever slugs filetype:json", "ashby slugs filetype:json", "breezy slugs filetype:json",
+    "company_slugs filetype:yaml", "company_slugs filetype:csv", "ats_companies filetype:json",
+]
+PAGES_PER_QUERY = 5
 _ATS_WORDS = {"greenhouse": GREENHOUSE, "gh": GREENHOUSE, "lever": LEVER, "ashby": ASHBY, "ashbyhq": ASHBY, "smartrecruiters": SMARTRECRUITERS, "smart_recruiters": SMARTRECRUITERS, "breezy": BREEZY, "breezyhr": BREEZY, "breezy_hr": BREEZY, "workable": WORKABLE}
 VENDOR_WORDS = frozenset(("www", "apply", "resources", "help", "support", "jobs", "careers", "blog", "app", "api", "status", "docs", "mail", "marketing", "go", "info", "assets", "cdn", "static"))
 _ATS_FIELDS = ("ats", "platform", "provider", "source", "ats_type", "atstype", "type", "vendor", "system", "ats_system")
