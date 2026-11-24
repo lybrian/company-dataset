@@ -1,116 +1,58 @@
-# Company Dataset
+# Job Board Platform
 
-A curated dataset of **22,682+ verified companies** hiring through Greenhouse, Lever, Ashby, SmartRecruiters, or Breezy HR — built from public datasets and vendor APIs.
+An automated, serverless job board backend powered by **GitHub Actions**, **Turso (libSQL)**, and a **TypeScript / Hono API** ready for any frontend job board webapp.
 
-## Current Stats (2026-11-05)
+## Architecture
 
-| Metric | Count |
-|--------|-------|
-| Verified companies | 22,682 |
-| Incomplete (missing fields) | 6,652 |
-| Unresolved boards | 1,827 |
-| **Total unique companies** | **29,334** |
-| Confirmed ATS boards | 30,340 |
-
-**By ATS (verified):** Greenhouse 7,049 • SmartRecruiters 6,369 • Ashby 4,261 • Breezy 3,053 • Lever 1,950
-
-Data exported to `data/exports/final_2026-11-05/` (not committed to git).
-
-## What "Verified" Means
-
-A company is **verified** when:
-1. Its ATS board responds to the vendor API (live)
-2. Identity is confirmed (vendor record + cross-reference)
-3. All four required fields present: `name`, `description`, `ats_system`, `ats_code`
-
-Optional fields (`website_url`, `linkedin_url`, `careersite_url`) are included where available.
-
-## Data Files (per export)
-
-| File | Description |
-|------|-------------|
-| `companies_verified.csv` | Complete records (7 columns) |
-| `companies_incomplete.csv` | Live boards with gaps + `missing_fields` |
-| `unresolved_boards.csv` | Boards with no confirmed identity |
-| `evidence.csv` | Field-level provenance for every value |
-| `qa_report.json` | Counts, coverage, rejection reasons |
-| `sources.json` | Source manifests with licenses/checksums |
-| `SHA256SUMS` | Integrity hashes |
-
-Review artifacts: `data/review/` (duplicates, uncertain, dead boards, demoted rows).
-
-## Sources
-
-**Board discovery (slugs):**
-
-| Source | License |
-|--------|---------|
-| latmay/ats-career-page-urls (HF) | CC BY 4.0 |
-| LastRound AI ATS directory | CC BY 4.0 |
-| Headcount Labs job postings (HF) | CC BY 4.0 |
-| kalebconfer job-board-directory | CC0 |
-| moonie0201/ats-directory | CC0 |
-| Feashliaa/job-board-aggregator | MIT |
-| veresk06/open-ats-feed | MIT |
-| Common Crawl (41 crawls, 2020–2026) | CC Terms |
-
-**Company details:**
-
-| Source | License | Used for |
-|--------|---------|----------|
-| BigPicture free (2023 Q4) | ODC-By 1.0 | LinkedIn handle, HQ country, website lookup |
-
-## Methodology
-
-- **No fabrication**: Every board was queried live against the vendor API. Empty fields stay empty — companies with gaps go to `incomplete`.
-- **Deduplication**: Boards merged by shared website, or shared LinkedIn + matching name. Name-only matches kept separate (e.g., 3 unrelated "Patch" companies).
-- **Descriptions**: Homepage meta description (any language) → Greenhouse board intro. Recruiting copy, cookie banners, placeholders filtered. Truncated at sentence boundary.
-- **Verification tiers**: A (open jobs), B (Lever region mismatch), C (zero jobs + independent evidence).
+- **`db/migrations/`** — Turso / SQLite schema (`boards`, `companies`, `jobs`, `ingestion_runs`, and `jobs_fts` FTS5 full-text search index with automatic triggers).
+- **`pipeline/`** — Python 3.12 async (`httpx`) ingestion engine:
+  - **Board Discovery** (`discover-boards.yml`, weekly): Curated public ATS registries (`LastRound`, `Kaleb`, `Moonie`, `Feashliaa`, `OpenATSFeed`, `OpenJobs`), YC directory, VC portfolio job boards (`robots.txt`-compliant), and Hacker News comments.
+  - **17 ATS Platforms** (`ingest-ats.yml`, every 6h across 10 parallel shards): Greenhouse, Lever (US/EU), Ashby, SmartRecruiters, Breezy HR, Workable, Workday, BambooHR, Recruitee, Teamtailor, Personio (DE/COM), Rippling, iCIMS, Pinpoint, JOIN, **Dover**, and **Gem**.
+  - **11 Direct Public Job Feeds** (`ingest-feeds.yml`, every 4h): RemoteOK, WeWorkRemotely, Arbeitnow, Remotive, Jobicy, **Himalayas**, **The Muse**, **Working Nomads**, **HN Who's Hiring**, **Landing.jobs**, and optional **USAJobs**.
+- **`api/`** — TypeScript + Hono REST API (`@libsql/client`) deployable to **Cloudflare Workers**, **Vercel**, or **Node.js / Docker**.
 
 ## Quick Start
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-pytest
-```
-
-Requires Python 3.11+, `requests`, `duckdb`.
-
-## Pipeline
-
-The pipeline operates over `data/store.db` in four stages:
+### 1. Provision Turso Database
 
 ```bash
-# 1. Discovery (resumable, writes data/raw/<source>/tokens.csv)
-python -m company_dataset.sources.wayback_cdx --raw data/raw
-python -m company_dataset.sources.commoncrawl_indexer --raw data/raw
-python -m company_dataset.sources.slug_prober --raw data/raw --db data/store.db --limit-per-vendor 5000
-
-# 2. Ingest
-company-dataset ingest --db data/store.db --raw data/raw --only wayback_cdx_2026_11_03
-
-# 3. Enrich + Quality
-company-dataset enrich --db data/store.db --raw data/raw --run myrun --out data/runs/myrun --per-ats 100000 --only-undecided
-company-dataset repair descriptions-cached --db data/store.db --run mydesc --from-runs myrun
-company-dataset repair final-checks --db data/store.db --run myqa --from-runs myrun,mydesc
-
-# 4. Export
-company-dataset export --db data/store.db --runs myrun,mydesc,myqa --fresh-origin myqa --out data/exports/final_YYYY-MM-DD
+turso db create job-board
+turso db show job-board --url
+turso db tokens create job-board
 ```
 
-Each value has a row in `field_evidence` with its source. Corrections append under new run labels — no history rewriting.
+Add `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` to **GitHub Repository Settings → Secrets and variables → Actions**.
 
-## Why Not 30,000+?
+### 2. Run Locally (with local SQLite)
 
-Merging all public sources yields ~31,800 distinct board slugs. ~50% no longer exist when queried against vendor APIs (company moved ATS, shut down, or slug was wrong). Common Crawl, GitHub lists, and domain-based slug guessing each added only hundreds — sources overlap heavily (>80% of live boards appear in 2+ sources). The remainder would require paid data or brute-force API enumeration.
+```bash
+# Install Python pipeline
+pip install -e "./pipeline[dev]"
 
-## License
+# Initialize local SQLite DB & ingest direct feeds
+job-pipeline --db-url file:local.db migrate
+job-pipeline --db-url file:local.db ingest-feeds --feeds remoteok,remotive,himalayas
 
-This dataset aggregates public sources. Each source retains its original license (see `sources.json` per export). When redistributing, include `source_manifest.csv` for attribution.
+# Start Hono API against the same DB
+cd api && npm install
+TURSO_DATABASE_URL=file:../local.db npm run dev
+```
 
----
+### 3. API Endpoints
 
-**Last updated:** 2026-11-05  
-**Export:** `data/exports/final_2026-11-05/`
+| Endpoint | Description |
+|---|---|
+| `GET /api/v1/health` | DB health check & latest completed sync timestamp |
+| `GET /api/v1/health/sources` | Per-source health across all 17 ATS platforms & 11 direct feeds (add `?probe=true` for live HTTP reachability/latency checks, or `?source=<name>`) |
+| `GET /api/v1/jobs` | Search (`q` via FTS5) & filter (`remote`, `employment_type`, `source`, `source_type`, `company`, `country`, `location`, `tag`, `salary_min`, `posted_since`, `sort`, `page`, `limit`) |
+| `GET /api/v1/jobs/:id` | Full job detail including HTML/text description & compensation |
+| `GET /api/v1/companies` | Paginated hiring companies with active job counts |
+| `GET /api/v1/companies/:slug` | Company profile and active job postings |
+| `GET /api/v1/filters` | Dynamic facet counts for frontend filter sidebars |
+| `GET /api/v1/stats` | Board-level counts, per-source breakdown, and recent runs |
+| `GET /api/v1/openapi.json` | OpenAPI 3.1 specification |
+
+### 4. Deploy the API
+
+- **Cloudflare Workers**: `cd api && npx wrangler secret put TURSO_DATABASE_URL && npx wrangler secret put TURSO_AUTH_TOKEN && npx wrangler deploy`
+- **Docker / Fly.io / Railway**: `docker build -t job-board-api ./api && docker run -p 8787:8787 -e TURSO_DATABASE_URL=... -e TURSO_AUTH_TOKEN=... job-board-api`

@@ -1,0 +1,37 @@
+name: Ingest Direct Job Feeds
+
+on:
+  schedule:
+    # Run every 4 hours
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      feeds:
+        description: "Comma-separated feed names or 'all'"
+        required: false
+        default: "all"
+
+concurrency:
+  group: ingest-feeds
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      USAJOBS_API_KEY: ${{ secrets.USAJOBS_API_KEY }}
+      USAJOBS_USER_AGENT: ${{ secrets.USAJOBS_USER_AGENT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install job-pipeline
+        run: pip install ./pipeline
+      - name: Run database migrations
+        run: job-pipeline migrate
+      - name: Ingest direct job feeds
+        run: job-pipeline ingest-feeds --feeds "${{ inputs.feeds || 'all' }}"

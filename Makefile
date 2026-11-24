@@ -1,19 +1,26 @@
-.PHONY: install test run all clean
+.PHONY: migrate discover ingest-feeds ingest-ats test-pipeline test-api test dev-api
 
-install:
-	python3 -m venv .venv
-	.venv/bin/pip install --upgrade pip
-	.venv/bin/pip install -e ".[dev]"
+DB_URL ?= file:local.db
 
-test:
-	.venv/bin/pytest -q
+migrate:
+	job-pipeline --db-url $(DB_URL) migrate
 
-run:
-	.venv/bin/company-dataset-legacy all
+discover:
+	job-pipeline --db-url $(DB_URL) discover
 
-all: install test run
+ingest-feeds:
+	job-pipeline --db-url $(DB_URL) ingest-feeds
 
-# Removes generated working files only; keeps downloads (data/raw) and the deliverable (data/output).
-clean:
-	rm -rf .venv .pytest_cache data/cache data/intermediate data/review
-	find . -name __pycache__ -prune -exec rm -rf {} +
+ingest-ats:
+	job-pipeline --db-url $(DB_URL) ingest-ats --shard 0 --total-shards 1 --max-boards 50
+
+test-pipeline:
+	pytest -v pipeline/tests
+
+test-api:
+	cd api && npm run typecheck && npm test
+
+test: test-pipeline test-api
+
+dev-api:
+	cd api && TURSO_DATABASE_URL=file:../local.db npm run dev

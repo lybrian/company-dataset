@@ -1,0 +1,63 @@
+name: Ingest ATS Jobs (Sharded)
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: "15 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      max_boards:
+        description: "Max boards per shard"
+        required: false
+        default: "300"
+      ats:
+        description: "Optional comma-separated ATS filter (e.g. greenhouse,lever,ashby)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ingest-ats
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install job-pipeline
+        run: pip install ./pipeline
+      - name: Run database migrations
+        run: job-pipeline migrate
+
+  ingest:
+    needs: migrate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install job-pipeline
+        run: pip install ./pipeline
+      - name: Sync ATS shard ${{ matrix.shard }}/10
+        run: |
+          job-pipeline ingest-ats \
+            --shard ${{ matrix.shard }} \
+            --total-shards 10 \
+            --max-boards "${{ inputs.max_boards || '300' }}" \
+            --ats "${{ inputs.ats || '' }}"

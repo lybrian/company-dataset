@@ -1,23 +1,28 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
-.pytest_cache/
+*.py[cod]
+*$py.class
 *.egg-info/
+.venv/
+venv/
+.pytest_cache/
+dist/
+build/
+
+# Node / TypeScript
+node_modules/
+api/dist/
+.wrangler/
+
+# Local databases & env
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.env
+.env.local
+.dev.vars
+
+# OS
 .DS_Store
-*.log
-
-# Pipeline working files. Rebuilt by `company-dataset all`.
-data/raw/
-data/cache/
-data/intermediate/
-data/review/
-
-# Local working artifacts (not committed)
-data/store.db
-data/store_backups/
-data/runs/
-data/exports/
-data/raw_*/
-data/output.zip
-
-# Kept in git: data/output/ (the deliverable) and selected reports/

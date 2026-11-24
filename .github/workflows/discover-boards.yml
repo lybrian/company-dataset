@@ -1,0 +1,35 @@
+name: Discover ATS Boards
+
+on:
+  schedule:
+    # Run weekly on Sunday at 02:00 UTC
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Comma-separated discovery groups (registries,yc,hn,vc) or 'all'"
+        required: false
+        default: "all"
+
+concurrency:
+  group: discover-boards
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install job-pipeline
+        run: pip install ./pipeline
+      - name: Run database migrations
+        run: job-pipeline migrate
+      - name: Discover ATS boards
+        run: job-pipeline discover --sources "${{ inputs.sources || 'all' }}"
